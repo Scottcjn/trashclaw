@@ -115,3 +115,4 @@ TRASHCLAW_AUTO_SHELL=1 python3 trashclaw.py --cwd ~/myproject
 ## License
 
 MIT
+# Test
