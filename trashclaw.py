@@ -36,6 +36,35 @@ CWD = os.getcwd()
 
 TOOLS = [
     {
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Show current git repository status (staged/unstaged files)",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show staged and unstaged git changes",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Commit all changes with a message",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "description": "Commit message"}},
+                "required": ["message"]
+            }
+        }
+    },
+
         "type": "function",
         "function": {
             "name": "read_file",
@@ -874,3 +903,37 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+# Git Tools
+def git_status() -> str:
+    """Show current git repository status."""
+    import subprocess
+    try:
+        result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True, cwd='.')
+        return result.stdout or 'Clean working tree'
+    except Exception as e:
+        return f"Error: {e}"
+
+def git_diff() -> str:
+    """Show staged and unstaged changes."""
+    import subprocess
+    try:
+        result = subprocess.run(['git', 'diff', '--color=never'], capture_output=True, text=True)
+        staged = subprocess.run(['git', 'diff', '--staged', '--color=never'], capture_output=True, text=True)
+        output = "=== Staged ===\n" + (staged.stdout or "None") + "\n=== Unstaged ===\n" + (result.stdout or "None")
+        return output
+    except Exception as e:
+        return f"Error: {e}"
+
+def git_commit(message: str) -> str:
+    """Commit changes with message."""
+    import subprocess
+    try:
+        subprocess.run(['git', 'add', '.'], capture_output=True)
+        result = subprocess.run(['git', 'commit', '-m', message], capture_output=True, text=True)
+        return result.stdout or result.stderr
+    except Exception as e:
+        return f"Error: {e}"
+
