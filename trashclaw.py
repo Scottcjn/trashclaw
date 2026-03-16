@@ -7,30 +7,397 @@ runs commands, searches codebases, fetches URLs, processes data — whatever
 you need. OpenClaw-style tool-use loop with zero external dependencies.
 
 Pure Python stdlib. Python 3.7+. Works with any OpenAI-compatible server.
+
+Windows compatibility:
+- readline fallback for Windows
+- Cross-platform shell execution (PowerShell/CMD on Windows, bash/sh on *nix)
+- Robust path normalization across OSes
 """
 
 import os
 import sys
 import json
 import subprocess
-import readline
 import urllib.request
 import urllib.error
 import re
 import glob as globlib
 import difflib
 import traceback
+import shutil
+import platform
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+
+# ── Safe readline import / fallback for Windows ──
+try:
+    import readline  # type: ignore
+except Exception:
+    class _ReadlineFallback:
+        def set_history_length(self, n: int) -> None:
+            pass
+        def add_history(self, s: str) -> None:
+            pass
+    readline = _ReadlineFallback()  # type: ignore
 
 # ── Config ──
 LLAMA_URL = os.environ.get("TRASHCLAW_URL", "http://localhost:8080")
 MODEL_NAME = os.environ.get("TRASHCLAW_MODEL", "local")
 MAX_TOOL_ROUNDS = int(os.environ.get("TRASHCLAW_MAX_ROUNDS", "15"))
-MAX_OUTPUT_CHARS = 8000
+MAX_OUTPUT_CHARS = int(os.environ.get("TRASHCLAW_MAX_OUTPUT", "8000"))
 APPROVE_SHELL = os.environ.get("TRASHCLAW_AUTO_SHELL", "0") != "1"
-HISTORY: List[Dict] = []
+TRASHCLAW_SHELL = os.environ.get("TRASHCLAW_SHELL", "").strip()
+TRASHCLAW_WIN_SHELL = os.environ.get("TRASHCLAW_WIN_SHELL", "").strip().lower()  # "powershell" | "cmd"
+HISTORY: List[Dict[str, Any]] = []
 CWD = os.getcwd()
+IS_WINDOWS = os.name == "nt" or sys.platform.startswith("win")
+PY_VERSION = sys.version_info[:3]
+
+# ── Utilities ──
+
+def _clip(s: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    if s is None:
+        return ""
+    if len(s) <= limit:
+        return s
+    head = s[: max(0, limit - 200)]
+    tail = s[-200:]
+    return f"{head}\n...\n[truncated {len(s)-len(head)-len(tail)} chars]\n{tail}"
+
+def _now() -> str:
+    try:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+def norm_path(path: str, base: Optional[str] = None) -> str:
+    if not path:
+        return path
+    p = os.path.expandvars(os.path.expanduser(path))
+    if not os.path.isabs(p):
+        b = base if base else CWD
+        p = os.path.join(b, p)
+    # Normalize and resolve symlinks where possible
+    try:
+        p = os.path.normpath(p)
+    except Exception:
+        pass
+    return p
+
+def ensure_dir(path: str) -> None:
+    d = os.path.dirname(path)
+    if d and not os.path.exists(d):
+        os.makedirs(d, exist_ok=True)
+
+def detect_shell() -> Tuple[List[str], str]:
+    """
+    Returns (argv, kind)
+    kind in {"bash", "sh", "powershell", "cmd"}
+    Respects TRASHCLAW_SHELL and TRASHCLAW_WIN_SHELL env vars.
+    """
+    if TRASHCLAW_SHELL:
+        # Custom shell path or command; executed with -lc if bash-like
+        sh = TRASHCLAW_SHELL.strip()
+        base = os.path.basename(sh).lower()
+        if IS_WINDOWS:
+            # If user specifies "cmd" or "powershell" we handle flags; else pass-through to powershell style
+            if "powershell" in base or base == "pwsh.exe" or base == "pwsh":
+                return ([sh, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"], "powershell")
+            if base in ("cmd", "cmd.exe"):
+                return ([sh, "/d", "/c"], "cmd")
+            # Fallback to powershell style flags
+            return ([sh, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"], "powershell")
+        else:
+            # If bash present in name, prefer -lc
+            if "bash" in base:
+                return ([sh, "-lc"], "bash")
+            # Fallback to sh
+            return ([sh, "-lc"], "sh")
+    if IS_WINDOWS:
+        # Prefer pwsh if available, else PowerShell 5, else cmd
+        pwsh = shutil.which("pwsh.exe") or shutil.which("pwsh")
+        powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+        prefer = TRASHCLAW_WIN_SHELL
+        if prefer == "cmd":
+            cmd = shutil.which("cmd.exe") or "cmd.exe"
+            return ([cmd, "/d", "/c"], "cmd")
+        if prefer == "powershell":
+            if pwsh:
+                return ([pwsh, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"], "powershell")
+            if powershell:
+                return ([powershell, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"], "powershell")
+        # Auto-detect
+        if pwsh or powershell:
+            sh = pwsh or powershell
+            return ([sh, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"], "powershell")
+        # Last resort: cmd
+        cmd = shutil.which("cmd.exe") or "cmd.exe"
+        return ([cmd, "/d", "/c"], "cmd")
+    # POSIX
+    bash = shutil.which("bash")
+    sh = shutil.which("sh") or "/bin/sh"
+    if bash:
+        return ([bash, "-lc"], "bash")
+    return ([sh, "-lc"], "sh")
+
+def run_shell(command: str, cwd: Optional[str] = None, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    shell_argv, kind = detect_shell()
+    cwd_use = cwd or CWD
+    env_use = os.environ.copy()
+    if env:
+        env_use.update(env)
+    # Windows unicode: use text=True + encoding/replace
+    try:
+        # Combine as: [shell, flags..., command]
+        args = list(shell_argv) + [command]
+        p = subprocess.run(
+            args,
+            cwd=cwd_use,
+            env=env_use,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            universal_newlines=True,  # text mode for 3.7+
+            encoding="utf-8",
+            errors="replace",
+        )
+        return {
+            "ok": p.returncode == 0,
+            "exit_code": p.returncode,
+            "stdout": p.stdout,
+            "stderr": p.stderr,
+            "shell": kind,
+            "argv": args,
+        }
+    except subprocess.TimeoutExpired as e:
+        out = ""
+        err = f"Timeout after {timeout}s" if timeout else "Timeout"
+        try:
+            out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            err_full = e.stderr.decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            if err_full:
+                err += "\n" + err_full
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "exit_code": -1,
+            "stdout": out,
+            "stderr": err,
+            "shell": kind,
+            "argv": list(shell_argv) + [command],
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": f"{type(e).__name__}: {e}",
+            "shell": kind,
+            "argv": list(shell_argv) + [command],
+        }
+
+def http_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            body = resp.read().decode(charset, "replace")
+            return {"ok": True, "status": resp.status, "json": json.loads(body)}
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", "replace")
+        except Exception:
+            err_body = ""
+        return {"ok": False, "status": e.code, "error": err_body}
+    except Exception as e:
+        return {"ok": False, "status": 0, "error": f"{type(e).__name__}: {e}"}
+
+def llm_chat(messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, tool_choice: Optional[str] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": False,
+    }
+    if tools:
+        payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
+    url = LLAMA_URL.rstrip("/") + "/v1/chat/completions"
+    return http_json(url, payload)
+
+def safe_read_file(path: str, offset: Optional[int] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
+    p = norm_path(path)
+    if not os.path.exists(p):
+        return False, f"File not found: {p}"
+    try:
+        with open(p, "r", encoding="utf-8", errors="replace", newline="") as f:
+            if offset is None and limit is None:
+                return True, f.read()
+            # Line-based slicing, 1-based offset
+            start = max(1, int(offset or 1))
+            lim = limit if limit is not None else None
+            out_lines = []
+            for i, line in enumerate(f, start=1):
+                if i < start:
+                    continue
+                out_lines.append(line)
+                if lim is not None and len(out_lines) >= lim:
+                    break
+            return True, "".join(out_lines)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def safe_write_file(path: str, content: str) -> Tuple[bool, str]:
+    p = norm_path(path)
+    try:
+        ensure_dir(p)
+        with open(p, "w", encoding="utf-8", errors="replace", newline="") as f:
+            f.write(content)
+        return True, f"Wrote {len(content)} bytes to {p}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def safe_append_file(path: str, content: str) -> Tuple[bool, str]:
+    p = norm_path(path)
+    try:
+        ensure_dir(p)
+        with open(p, "a", encoding="utf-8", errors="replace", newline="") as f:
+            f.write(content)
+        return True, f"Appended {len(content)} bytes to {p}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def safe_edit_file(path: str, old_string: str, new_string: str, count: Optional[int] = None) -> Tuple[bool, str]:
+    p = norm_path(path)
+    if not os.path.exists(p):
+        return False, f"File not found: {p}"
+    try:
+        with open(p, "r", encoding="utf-8", errors="replace", newline="") as f:
+            data = f.read()
+        if old_string not in data:
+            return False, "old_string not found"
+        n = -1 if count is None else max(0, int(count))
+        replaced = data.replace(old_string, new_string, n if n >= 0 else data.count(old_string))
+        with open(p, "w", encoding="utf-8", errors="replace", newline="") as f:
+            f.write(replaced)
+        changes = abs(len(replaced) - len(data))
+        return True, f"Replaced occurrences; size delta {changes} bytes"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def safe_glob(pattern: str, base: Optional[str] = None, recursive: bool = True) -> List[str]:
+    b = base or CWD
+    pat = norm_path(pattern, base=b)
+    # Keep pattern as-is for glob; but ensure directory separators are OS-native
+    try:
+        # If the pattern was absolute, okay; else join base and relative pattern
+        if not os.path.isabs(pattern):
+            pat = os.path.join(b, pattern)
+    except Exception:
+        pass
+    files = globlib.glob(pat, recursive=recursive)
+    # Normalize and make relative to current CWD when possible
+    out = []
+    for p in files:
+        try:
+            out.append(os.path.normpath(p))
+        except Exception:
+            out.append(p)
+    return out
+
+def safe_list_dir(path: Optional[str] = None) -> Tuple[bool, str]:
+    p = norm_path(path or CWD)
+    if not os.path.exists(p):
+        return False, f"Not found: {p}"
+    if not os.path.isdir(p):
+        return False, f"Not a directory: {p}"
+    try:
+        entries = os.listdir(p)
+        entries.sort()
+        lines = []
+        for name in entries:
+            fp = os.path.join(p, name)
+            try:
+                st = os.stat(fp)
+                size = st.st_size
+                typ = "dir" if os.path.isdir(fp) else "file"
+                lines.append(f"{typ:4} {size:10d}  {name}")
+            except Exception:
+                lines.append(f"????          ?  {name}")
+        return True, "\n".join(lines)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def safe_search(pattern: str, paths: List[str], flags: Optional[str] = None, max_matches: int = 2000) -> Tuple[bool, str]:
+    # flags: "i" case-insensitive, "m" multiline, "s" dotall
+    fl = 0
+    if flags:
+        if "i" in flags:
+            fl |= re.IGNORECASE
+        if "m" in flags:
+            fl |= re.MULTILINE
+        if "s" in flags:
+            fl |= re.DOTALL
+    try:
+        rx = re.compile(pattern, fl)
+    except Exception as e:
+        return False, f"Invalid regex: {type(e).__name__}: {e}"
+    matches = []
+    total = 0
+    for p in paths:
+        # Expand globs for each input path
+        expanded = safe_glob(p, base=CWD, recursive=True) if any(ch in p for ch in ["*", "?", "["]) else [norm_path(p)]
+        for fp in expanded:
+            if not os.path.isfile(fp):
+                continue
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace", newline="") as f:
+                    for i, line in enumerate(f, start=1):
+                        for m in rx.finditer(line):
+                            snippet = line.rstrip("\n")
+                            matches.append(f"{fp}:{i}:{m.start()}:{snippet}")
+                            total += 1
+                            if total >= max_matches:
+                                break
+                    if total >= max_matches:
+                        break
+            except Exception:
+                continue
+        if total >= max_matches:
+            break
+    if not matches:
+        return True, "No matches."
+    if total >= max_matches:
+        matches.append(f"... truncated at {max_matches} matches")
+    return True, "\n".join(matches)
+
+def safe_diff(a_path: str, b_path: str, n: int = 3) -> Tuple[bool, str]:
+    a_p = norm_path(a_path)
+    b_p = norm_path(b_path)
+    if not os.path.exists(a_p) or not os.path.exists(b_p):
+        return False, "Both files must exist"
+    try:
+        with open(a_p, "r", encoding="utf-8", errors="replace", newline="") as fa:
+            a_lines = fa.readlines()
+        with open(b_p, "r", encoding="utf-8", errors="replace", newline="") as fb:
+            b_lines = fb.readlines()
+        diff = difflib.unified_diff(a_lines, b_lines, fromfile=a_p, tofile=b_p, lineterm="", n=n)
+        return True, "\n".join(diff)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def http_get(url: str, timeout: int = 30) -> Tuple[bool, str]:
+    req = urllib.request.Request(url, headers={"User-Agent": "TrashClaw/0.2"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            body = resp.read().decode(charset, "replace")
+            return True, body
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 # ── Tool Definitions ──
 
@@ -75,8 +442,9 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path to edit"},
-                    "old_string": {"type": "string", "description": "Exact string to find and replace"},
-                    "new_string": {"type": "string", "description": "Replacement string"}
+                    "old_string": {"type": "string", "description": "Exact text to replace"},
+                    "new_string": {"type": "string", "description": "Replacement text"},
+                    "count": {"type": "integer", "description": "Maximum number of replacements (optional)"}
                 },
                 "required": ["path", "old_string", "new_string"]
             }
@@ -85,46 +453,15 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "run_command",
-            "description": "Execute a shell command and return its output. Use for builds, tests, git, system info.",
+            "name": "append_file",
+            "description": "Append text to a file, creating it if missing.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Shell command to execute"},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"}
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
                 },
-                "required": ["command"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_files",
-            "description": "Search file contents using regex pattern. Like grep -rn.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                    "path": {"type": "string", "description": "Directory or file to search in (default: current dir)"},
-                    "glob_filter": {"type": "string", "description": "File glob pattern like '*.py' or '*.js'"}
-                },
-                "required": ["pattern"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "find_files",
-            "description": "Find files matching a glob pattern. Like find or ls.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Glob pattern like '**/*.py' or 'src/**/*.ts'"},
-                    "path": {"type": "string", "description": "Base directory to search from (default: current dir)"}
-                },
-                "required": ["pattern"]
+                "required": ["path", "content"]
             }
         }
     },
@@ -132,11 +469,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_dir",
-            "description": "List files and directories in a path. Shows file sizes and types.",
+            "description": "List files in a directory (name, size, type).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path to list (default: current dir)"}
+                    "path": {"type": "string"}
                 },
                 "required": []
             }
@@ -145,12 +482,86 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "fetch_url",
-            "description": "Fetch a URL and return its readable text content. Strips HTML tags. Good for browsing the web.",
+            "name": "glob",
+            "description": "Glob for files using patterns like **/*.py. Paths are relative to CWD unless absolute.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "The URL to fetch (e.g. https://example.com)"}
+                    "pattern": {"type": "string"},
+                    "recursive": {"type": "boolean"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_text",
+            "description": "Regex search through files. Provide a list of file paths or glob patterns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "paths": {"type": "array", "items": {"type": "string"}},
+                    "flags": {"type": "string", "description": "i,m,s"},
+                    "max_matches": {"type": "integer"}
+                },
+                "required": ["pattern", "paths"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_shell",
+            "description": "Run a shell command in the project directory. Auto-detects OS shell (PowerShell/CMD on Windows, bash/sh on Unix).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "timeout": {"type": "integer"},
+                    "cwd": {"type": "string"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "change_dir",
+            "description": "Change working directory for subsequent commands.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pwd",
+            "description": "Return the current working directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "http_get",
+            "description": "Fetch a URL via HTTP GET.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "timeout": {"type": "integer"}
                 },
                 "required": ["url"]
             }
@@ -159,804 +570,268 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "think",
-            "description": "Use this tool to think through a problem step by step before acting. No side effects.",
+            "name": "diff_files",
+            "description": "Unified diff between two files.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "thought": {"type": "string", "description": "Your reasoning or plan"}
+                    "a_path": {"type": "string"},
+                    "b_path": {"type": "string"},
+                    "context": {"type": "integer"}
                 },
-                "required": ["thought"]
+                "required": ["a_path", "b_path"]
             }
         }
     }
 ]
 
-TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+# ── Tool Handlers ──
 
-# ── Tool Implementations ──
+def tool_read_file(args: Dict[str, Any]) -> str:
+    ok, out = safe_read_file(args.get("path", ""), args.get("offset"), args.get("limit"))
+    return out if ok else f"[ERROR] {out}"
 
-def _resolve_path(path: str) -> str:
-    """Resolve a path relative to CWD."""
-    path = os.path.expanduser(path)
-    if not os.path.isabs(path):
-        path = os.path.join(CWD, path)
-    return os.path.normpath(path)
+def tool_write_file(args: Dict[str, Any]) -> str:
+    ok, out = safe_write_file(args.get("path", ""), args.get("content", ""))
+    return out if ok else f"[ERROR] {out}"
 
+def tool_edit_file(args: Dict[str, Any]) -> str:
+    ok, out = safe_edit_file(args.get("path", ""), args.get("old_string", ""), args.get("new_string", ""), args.get("count"))
+    return out if ok else f"[ERROR] {out}"
 
-def tool_read_file(path: str, offset: int = None, limit: int = None) -> str:
-    path = _resolve_path(path)
-    try:
-        with open(path, "r", errors="replace") as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        return f"Error: File not found: {path}"
-    except PermissionError:
-        return f"Error: Permission denied: {path}"
-    except Exception as e:
-        return f"Error reading {path}: {e}"
+def tool_append_file(args: Dict[str, Any]) -> str:
+    ok, out = safe_append_file(args.get("path", ""), args.get("content", ""))
+    return out if ok else f"[ERROR] {out}"
 
-    total = len(lines)
-    start = max(0, (offset or 1) - 1)
-    end = start + limit if limit else total
+def tool_list_dir(args: Dict[str, Any]) -> str:
+    ok, out = safe_list_dir(args.get("path"))
+    return out if ok else f"[ERROR] {out}"
 
-    numbered = []
-    for i, line in enumerate(lines[start:end], start=start + 1):
-        numbered.append(f"{i:>5}\t{line.rstrip()}")
+def tool_glob(args: Dict[str, Any]) -> str:
+    pattern = args.get("pattern", "")
+    recursive = bool(args.get("recursive", True))
+    files = safe_glob(pattern, base=CWD, recursive=recursive)
+    if not files:
+        return "[]"
+    return "\n".join(files)
 
-    result = "\n".join(numbered)
-    if len(result) > MAX_OUTPUT_CHARS:
-        result = result[:MAX_OUTPUT_CHARS] + f"\n... [truncated, {total} lines total]"
-    return result
+def tool_search_text(args: Dict[str, Any]) -> str:
+    pattern = args.get("pattern", "")
+    paths = args.get("paths", [])
+    flags = args.get("flags")
+    max_matches = args.get("max_matches", 2000)
+    ok, out = safe_search(pattern, paths, flags=flags, max_matches=max_matches)
+    return out if ok else f"[ERROR] {out}"
 
-
-def tool_write_file(path: str, content: str) -> str:
-    path = _resolve_path(path)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write(content)
-        lines = content.count("\n") + 1
-        return f"Wrote {len(content)} bytes ({lines} lines) to {path}"
-    except Exception as e:
-        return f"Error writing {path}: {e}"
-
-
-def tool_edit_file(path: str, old_string: str, new_string: str) -> str:
-    path = _resolve_path(path)
-    try:
-        with open(path, "r") as f:
-            content = f.read()
-    except FileNotFoundError:
-        return f"Error: File not found: {path}"
-    except Exception as e:
-        return f"Error reading {path}: {e}"
-
-    count = content.count(old_string)
-    if count == 0:
-        # Show close matches to help debug
-        lines = content.split("\n")
-        close = []
-        needle = old_string.split("\n")[0].strip()
-        for i, line in enumerate(lines, 1):
-            if needle[:30] in line:
-                close.append(f"  Line {i}: {line.rstrip()[:80]}")
-        hint = "\n".join(close[:5]) if close else "  (no similar lines found)"
-        return f"Error: old_string not found in {path}.\nSearched for: {repr(old_string[:80])}\nClose matches:\n{hint}"
-    if count > 1:
-        return f"Error: old_string found {count} times in {path}. Must be unique. Add more context."
-
-    new_content = content.replace(old_string, new_string, 1)
-    try:
-        with open(path, "w") as f:
-            f.write(new_content)
-    except Exception as e:
-        return f"Error writing {path}: {e}"
-
-    # Show diff
-    old_lines = old_string.split("\n")
-    new_lines = new_string.split("\n")
-    diff = list(difflib.unified_diff(old_lines, new_lines, lineterm="", n=2))
-    diff_str = "\n".join(diff[:20]) if diff else "(no visible diff)"
-    return f"Edited {path} (1 replacement)\n{diff_str}"
-
-
-def tool_run_command(command: str, timeout: int = 30) -> str:
+def tool_run_shell(args: Dict[str, Any]) -> str:
     global CWD
+    cmd = args.get("command", "")
+    t = args.get("timeout")
+    cwd = args.get("cwd") or CWD
+    if not cmd.strip():
+        return "[ERROR] Empty command"
     if APPROVE_SHELL:
-        try:
-            answer = input(f"  \033[33mRun:\033[0m {command} \033[90m[y/N]\033[0m ").strip().lower()
-        except EOFError:
-            return "Error: User denied command (EOF)"
-        if answer not in ("y", "yes"):
-            return "Command cancelled by user."
+        print(f"\n[approve] Run shell command in {cwd} using {detect_shell()[1]}:\n$ {cmd}")
+        resp = input("Proceed? [y/N] ").strip().lower()
+        if resp not in ("y", "yes"):
+            return "[CANCELLED] Shell command rejected by user."
+    res = run_shell(cmd, cwd=norm_path(cwd), timeout=int(t) if t else None)
+    out = ""
+    if res.get("stdout"):
+        out += res["stdout"]
+    if res.get("stderr"):
+        if out:
+            out += "\n"
+        out += f"[stderr]\n{res['stderr']}"
+    meta = f"[exit {res.get('exit_code')} via {res.get('shell')}]"
+    if not out.strip():
+        out = meta
+    else:
+        out = f"{out}\n{meta}"
+    return _clip(out)
 
-    # Handle cd specially
-    if command.strip().startswith("cd "):
-        new_dir = command.strip()[3:].strip().strip('"').strip("'")
-        new_dir = _resolve_path(new_dir)
-        if os.path.isdir(new_dir):
-            CWD = new_dir
-            return f"Changed directory to {CWD}"
-        else:
-            return f"Error: Directory not found: {new_dir}"
+def tool_change_dir(args: Dict[str, Any]) -> str:
+    global CWD
+    p = norm_path(args.get("path", ""))
+    if not os.path.exists(p):
+        return f"[ERROR] Path not found: {p}"
+    if not os.path.isdir(p):
+        return f"[ERROR] Not a directory: {p}"
+    CWD = p
+    os.chdir(CWD)
+    return f"Changed directory to: {CWD}"
 
-    try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=CWD, env={**os.environ, "PATH": os.environ.get("PATH", "") + ":/usr/local/bin"}
-        )
-        output = result.stdout
-        if result.stderr:
-            output += ("\n" if output else "") + result.stderr
-        output = output.strip() or "(no output)"
-        if result.returncode != 0:
-            output = f"[exit code {result.returncode}]\n{output}"
-        if len(output) > MAX_OUTPUT_CHARS:
-            output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
-        return output
-    except subprocess.TimeoutExpired:
-        return f"Error: Command timed out after {timeout}s"
-    except Exception as e:
-        return f"Error: {e}"
+def tool_pwd(args: Dict[str, Any]) -> str:
+    return CWD
 
+def tool_http_get(args: Dict[str, Any]) -> str:
+    ok, out = http_get(args.get("url", ""), timeout=int(args.get("timeout", 30)))
+    return out if ok else f"[ERROR] {out}"
 
-def tool_search_files(pattern: str, path: str = None, glob_filter: str = None) -> str:
-    search_path = _resolve_path(path) if path else CWD
-    results = []
-    count = 0
-    max_results = 50
+def tool_diff_files(args: Dict[str, Any]) -> str:
+    ok, out = safe_diff(args.get("a_path", ""), args.get("b_path", ""), n=int(args.get("context", 3)))
+    return out if ok else f"[ERROR] {out}"
 
-    try:
-        compiled = re.compile(pattern, re.IGNORECASE)
-    except re.error as e:
-        return f"Error: Invalid regex: {e}"
-
-    for root, dirs, files in os.walk(search_path):
-        # Skip hidden dirs and common noise
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "__pycache__", "venv", ".git")]
-        for fname in files:
-            if glob_filter and not globlib.fnmatch.fnmatch(fname, glob_filter):
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                with open(fpath, "r", errors="replace") as f:
-                    for i, line in enumerate(f, 1):
-                        if compiled.search(line):
-                            rel = os.path.relpath(fpath, search_path)
-                            results.append(f"{rel}:{i}: {line.rstrip()[:120]}")
-                            count += 1
-                            if count >= max_results:
-                                results.append(f"... [{count}+ matches, showing first {max_results}]")
-                                return "\n".join(results)
-            except (PermissionError, IsADirectoryError, UnicodeDecodeError):
-                continue
-
-    if not results:
-        return f"No matches for /{pattern}/ in {search_path}"
-    return "\n".join(results)
-
-
-def tool_find_files(pattern: str, path: str = None) -> str:
-    base = _resolve_path(path) if path else CWD
-    full_pattern = os.path.join(base, pattern)
-    matches = sorted(globlib.glob(full_pattern, recursive=True))
-
-    if not matches:
-        return f"No files matching {pattern} in {base}"
-
-    results = []
-    for m in matches[:100]:
-        rel = os.path.relpath(m, base)
-        try:
-            stat = os.stat(m)
-            size = stat.st_size
-            if size < 1024:
-                size_str = f"{size}B"
-            elif size < 1024 * 1024:
-                size_str = f"{size // 1024}KB"
-            else:
-                size_str = f"{size // (1024*1024)}MB"
-            kind = "dir" if os.path.isdir(m) else "file"
-            results.append(f"  {rel:<50} {size_str:>8}  {kind}")
-        except OSError:
-            results.append(f"  {rel}")
-
-    header = f"Found {len(matches)} match{'es' if len(matches) != 1 else ''}:"
-    if len(matches) > 100:
-        header += f" (showing first 100 of {len(matches)})"
-    return header + "\n" + "\n".join(results)
-
-
-def tool_list_dir(path: str = None) -> str:
-    target = _resolve_path(path) if path else CWD
-    if not os.path.isdir(target):
-        return f"Error: Not a directory: {target}"
-
-    entries = []
-    try:
-        items = sorted(os.listdir(target))
-    except PermissionError:
-        return f"Error: Permission denied: {target}"
-
-    for item in items:
-        if item.startswith("."):
-            continue
-        full = os.path.join(target, item)
-        try:
-            stat = os.stat(full)
-            size = stat.st_size
-            if os.path.isdir(full):
-                entries.append(f"  {item + '/':.<50} {'dir':>8}")
-            else:
-                if size < 1024:
-                    size_str = f"{size}B"
-                elif size < 1024 * 1024:
-                    size_str = f"{size // 1024}KB"
-                else:
-                    size_str = f"{size // (1024*1024)}MB"
-                entries.append(f"  {item:.<50} {size_str:>8}")
-        except OSError:
-            entries.append(f"  {item}")
-
-    if not entries:
-        return f"{target}: (empty)"
-    return f"{target}:\n" + "\n".join(entries)
-
-
-def tool_fetch_url(url: str) -> str:
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TrashClaw/0.2'})
-        with urllib.request.urlopen(req, timeout=30) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-            
-            # Simple heuristic HTML tag stripping without external dependencies
-            # 1. Remove style and script blocks
-            html = re.sub(r'<script.*?>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-            html = re.sub(r'<style.*?>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-            
-            # 2. Remove all HTML tags
-            text = re.sub(r'<[^>]+>', ' ', html)
-            
-            # 3. Fix HTML entities
-            text = text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&quot;', '"').replace('&#39;', "'")
-            
-            # 4. Collapse whitespace
-            text = re.sub(r'\s+', ' ', text).strip()
-            
-            if not text:
-                return f"Fetched {url} successfully, but found no readable text."
-                
-            if len(text) > MAX_OUTPUT_CHARS:
-                return f"Fetched {url}:\n\n{text[:MAX_OUTPUT_CHARS]}... [truncated]"
-            return f"Fetched {url}:\n\n{text}"
-    except urllib.error.HTTPError as e:
-        return f"HTTP Error fetching {url}: {e.code} {e.reason}"
-    except urllib.error.URLError as e:
-        return f"URL Error fetching {url}: {e.reason}"
-    except Exception as e:
-        return f"Error fetching {url}: {str(e)}"
-
-
-def tool_think(thought: str) -> str:
-    return f"[Thought recorded, no side effects]"
-
-
-# Tool dispatch
-TOOL_DISPATCH = {
-    "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
-    "write_file": lambda args: tool_write_file(args["path"], args["content"]),
-    "edit_file": lambda args: tool_edit_file(args["path"], args["old_string"], args["new_string"]),
-    "run_command": lambda args: tool_run_command(args["command"], args.get("timeout", 30)),
-    "search_files": lambda args: tool_search_files(args["pattern"], args.get("path"), args.get("glob_filter")),
-    "find_files": lambda args: tool_find_files(args["pattern"], args.get("path")),
-    "list_dir": lambda args: tool_list_dir(args.get("path")),
-    "fetch_url": lambda args: tool_fetch_url(args["url"]),
-    "think": lambda args: tool_think(args["thought"]),
+TOOL_IMPLS = {
+    "read_file": tool_read_file,
+    "write_file": tool_write_file,
+    "edit_file": tool_edit_file,
+    "append_file": tool_append_file,
+    "list_dir": tool_list_dir,
+    "glob": tool_glob,
+    "search_text": tool_search_text,
+    "run_shell": tool_run_shell,
+    "change_dir": tool_change_dir,
+    "pwd": tool_pwd,
+    "http_get": tool_http_get,
+    "diff_files": tool_diff_files,
 }
 
+# ── Chat / Tool Loop ──
 
-def detect_project_context() -> str:
-    """Scan CWD for common project files and return a summary of the framework/language."""
-    files = set(os.listdir(CWD))
-    context = []
-    
-    if "package.json" in files:
-        context.append("Node.js/JavaScript")
-    if "Cargo.toml" in files:
-        context.append("Rust")
-    if "requirements.txt" in files or "pyproject.toml" in files or "setup.py" in files:
-        context.append("Python")
-    if "go.mod" in files:
-        context.append("Go")
-    if "Makefile" in files:
-        context.append("Make")
-    if "CMakeLists.txt" in files:
-        context.append("C/C++ (CMake)")
-    if "pom.xml" in files or "build.gradle" in files:
-        context.append("Java")
-    if "composer.json" in files:
-        context.append("PHP (Composer)")
-    if "Gemfile" in files:
-        context.append("PHP (Composer)") # wait, gemfile is Ruby
-        context[-1] = "Ruby"
-        
-    if not context:
-        return "Unknown or Generic"
-    return ", ".join(context)
+def pretty_print_assistant(text: str) -> None:
+    print("\nAssistant:")
+    print(text)
 
+def pretty_print_tool_call(name: str, args: Dict[str, Any]) -> None:
+    print(f"\n[tool] {name}({json.dumps(args, ensure_ascii=False)})")
 
-# ── LLM Client ──
+def run_agent_round(user_input: str) -> None:
+    # Seed system prompt with minimal context and OS hint
+    system_prompt = f"""You are TrashClaw, a local tool-use agent. You can read/write files, run shell commands, search code, and fetch URLs using provided tools.
+Follow the user's instructions carefully. Prefer minimal, correct changes. Summarize your results.
+Environment:
+- OS: {platform.system()} {platform.release()}
+- Python: {platform.python_version()}
+- CWD: {CWD}
+"""
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    # Add prior history
+    messages.extend(HISTORY)
+    messages.append({"role": "user", "content": user_input})
 
-SYSTEM_PROMPT = """You are TrashClaw, a general-purpose local agent running on the user's machine.
+    tool_rounds = 0
+    tool_results: List[Dict[str, Any]] = []
 
-You can accomplish any task that involves files, commands, or information on this system.
-You are not limited to coding — you handle research, system administration, file management,
-data processing, automation, and anything else the user asks.
+    while tool_rounds < MAX_TOOL_ROUNDS:
+        resp = llm_chat(messages, tools=TOOLS, tool_choice="auto")
+        if not resp.get("ok"):
+            err = f"LLM request failed: HTTP {resp.get('status')} - {resp.get('error')}"
+            pretty_print_assistant(err)
+            HISTORY.append({"role": "assistant", "content": err})
+            return
+        data = resp.get("json", {})
+        choices = data.get("choices") or []
+        if not choices:
+            pretty_print_assistant("[ERROR] Empty response from model.")
+            HISTORY.append({"role": "assistant", "content": "[ERROR] Empty response from model."})
+            return
+        choice = choices[0]
+        message = choice.get("message") or {}
+        content = message.get("content")
+        tool_calls = message.get("tool_calls") or []
 
-Current Directory: {cwd}
-Detected Project Context: {project_context}
-
-You have access to these tools:
-- read_file: Read file contents with optional line range
-- write_file: Create or overwrite files
-- edit_file: Replace exact strings in files (must match uniquely)
-- run_command: Execute shell commands (curl, git, grep, python, anything installed)
-- search_files: Grep for patterns across files
-- find_files: Find files by glob pattern
-- list_dir: List directory contents
-- think: Reason through a problem step by step before acting
-
-IMPORTANT RULES:
-1. Always read a file before editing it.
-2. Use edit_file for surgical changes, write_file for new files.
-3. Use think to plan multi-step tasks before starting.
-4. Be concise — every token counts.
-5. After making changes, verify them.
-6. If a command might be destructive, explain what it does first.
-7. Use run_command freely — curl for web requests, python for computation, etc.
-8. Chain tools together to accomplish complex tasks autonomously.
-
-You are part of the Elyan Labs ecosystem. Current directory: {cwd}"""
-
-
-def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
-    """Send request to llama-server and return the full response while streaming text."""
-    payload = {
-        "messages": messages,
-        "temperature": 0.3,
-        "max_tokens": 1024,
-        "stream": True,
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        f"{LLAMA_URL}/v1/chat/completions",
-        data=data,
-        headers={"Content-Type": "application/json"},
-    )
-    
-    full_content = ""
-    tool_calls_dict = {}
-    finish_reason = None
-    
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            for line in resp:
-                line = line.decode("utf-8").strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
+        if tool_calls:
+            # Process tool calls sequentially (OpenAI-style)
+            for tc in tool_calls:
+                f = tc.get("function") or {}
+                name = f.get("name")
+                args_str = f.get("arguments") or "{}"
                 try:
-                    chunk = json.loads(data_str)
-                    choice = chunk.get("choices", [{}])[0]
-                    delta = choice.get("delta", {})
-                    
-                    if "content" in delta and delta["content"]:
-                        content = delta["content"]
-                        full_content += content
-                        print(content, end="", flush=True)
-                        
-                    if "tool_calls" in delta and delta["tool_calls"]:
-                        for tc in delta["tool_calls"]:
-                            idx = tc.get("index", 0)
-                            if idx not in tool_calls_dict:
-                                tool_calls_dict[idx] = {
-                                    "id": tc.get("id", f"tc_{idx}"),
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""}
-                                }
-                            func = tc.get("function", {})
-                            if "name" in func and func["name"]:
-                                tool_calls_dict[idx]["function"]["name"] += func["name"]
-                            if "arguments" in func and func["arguments"]:
-                                tool_calls_dict[idx]["function"]["arguments"] += func["arguments"]
-                                
-                    if choice.get("finish_reason"):
-                        finish_reason = choice["finish_reason"]
-                        
-                except json.JSONDecodeError:
-                    pass
-        print() # Newline after streaming completes
-    except urllib.error.URLError as e:
-        return {"error": f"Cannot reach llama-server: {e}"}
-    except Exception as e:
-        return {"error": f"LLM request failed: {e}"}
-
-    tool_calls_list = [v for k, v in sorted(tool_calls_dict.items())] if tool_calls_dict else None
-    
-    return {
-        "choices": [{
-            "message": {
-                "content": full_content,
-                "tool_calls": tool_calls_list
-            },
-            "finish_reason": finish_reason
-        }]
-    }
-
-
-def _try_parse_tool_calls_from_text(text: str) -> Optional[List[Dict]]:
-    """Fallback: parse tool calls from text if model doesn't use native function calling.
-
-    Supports formats:
-      <tool_call>{"name": "...", "arguments": {...}}</tool_call>
-      ```json\n{"name": "...", "arguments": {...}}\n```
-      {"tool": "...", "args": {...}}
-    """
-    calls = []
-
-    # Format 1: <tool_call> tags
-    tag_matches = re.findall(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', text, re.DOTALL)
-    for m in tag_matches:
-        try:
-            obj = json.loads(m)
-            name = obj.get("name") or obj.get("tool") or obj.get("function", "")
-            args = obj.get("arguments") or obj.get("args") or obj.get("parameters", {})
-            if isinstance(args, str):
-                args = json.loads(args)
-            if name in TOOL_NAMES:
-                calls.append({"name": name, "arguments": args})
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-    if calls:
-        return calls
-
-    # Format 2: JSON in code blocks
-    block_matches = re.findall(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-    for m in block_matches:
-        try:
-            obj = json.loads(m)
-            name = obj.get("name") or obj.get("tool") or obj.get("function", "")
-            args = obj.get("arguments") or obj.get("args") or obj.get("parameters", {})
-            if isinstance(args, str):
-                args = json.loads(args)
-            if name in TOOL_NAMES:
-                calls.append({"name": name, "arguments": args})
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-    if calls:
-        return calls
-
-    # Format 3: bare JSON with tool/name field
-    json_matches = re.findall(r'\{[^{}]*"(?:name|tool)"[^{}]*\}', text)
-    for m in json_matches:
-        try:
-            obj = json.loads(m)
-            name = obj.get("name") or obj.get("tool", "")
-            args = obj.get("arguments") or obj.get("args") or obj.get("parameters", {})
-            if isinstance(args, str):
-                args = json.loads(args)
-            if name in TOOL_NAMES:
-                calls.append({"name": name, "arguments": args})
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-    return calls if calls else None
-
-
-# ── Agent Loop ──
-
-def agent_turn(user_message: str):
-    """Run the full agent loop: LLM thinks, calls tools, observes, repeats."""
-    HISTORY.append({"role": "user", "content": user_message})
-
-    for round_num in range(MAX_TOOL_ROUNDS):
-        # Build messages
-        sys_prompt = SYSTEM_PROMPT.format(cwd=CWD, project_context=detect_project_context())
-        messages = [{"role": "system", "content": sys_prompt}]
-        # Keep recent context
-        messages.extend(HISTORY[-40:])
-
-        # Show thinking indicator
-        indicator = f"  \033[90m[round {round_num + 1}]\033[0m " if round_num > 0 else "  "
-        print(f"{indicator}\033[90mthinking...\033[0m", end="", flush=True)
-
-        # Call LLM
-        response = llm_request(messages, tools=TOOLS)
-
-        # Clear thinking indicator
-        print(f"\r{' ' * 60}\r", end="")
-
-        if "error" in response:
-            err_msg = response["error"]
-            print(f"\033[31m[ERROR]\033[0m {err_msg}")
-            HISTORY.append({"role": "assistant", "content": f"Error: {err_msg}"})
-            return
-
-        choice = response.get("choices", [{}])[0]
-        message = choice.get("message", {})
-        content = message.get("content", "")
-        tool_calls = message.get("tool_calls")
-        finish_reason = choice.get("finish_reason", "")
-
-        # If no native tool calls, try parsing from text
-        if not tool_calls and content:
-            parsed = _try_parse_tool_calls_from_text(content)
-            if parsed:
-                tool_calls = [
-                    {
-                        "id": f"tc_{i}",
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}
-                    }
-                    for i, tc in enumerate(parsed)
-                ]
-                # Strip the tool call JSON from displayed content
-                display_content = re.sub(r'<tool_call>.*?</tool_call>', '', content, flags=re.DOTALL).strip()
-                display_content = re.sub(r'```json\s*\{.*?\}\s*```', '', display_content, flags=re.DOTALL).strip()
-                if display_content:
-                    print(display_content)
-
-        # No tool calls — just a text response, we're done
-        if not tool_calls:
-            if content:
-                print(content)
-            HISTORY.append({"role": "assistant", "content": content})
-            return
-
-        # Execute tool calls
-        assistant_msg = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
-        HISTORY.append(assistant_msg)
-
-        for tc in tool_calls:
-            func = tc.get("function", {})
-            tool_name = func.get("name", "unknown")
-            tool_id = tc.get("id", "tc_0")
-
-            # Parse arguments
-            try:
-                args_raw = func.get("arguments", "{}")
-                if isinstance(args_raw, str):
-                    args = json.loads(args_raw)
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                except Exception:
+                    args = {}
+                pretty_print_tool_call(name, args)
+                impl = TOOL_IMPLS.get(name)
+                if not impl:
+                    result_text = f"[ERROR] Unknown tool: {name}"
                 else:
-                    args = args_raw
-            except json.JSONDecodeError:
-                args = {}
+                    try:
+                        result_text = impl(args)
+                    except Exception as e:
+                        tb = traceback.format_exc()
+                        result_text = f"[ERROR] {type(e).__name__}: {e}\n{tb}"
+                tool_results.append({"tool_call_id": tc.get("id") or "", "name": name, "content": _clip(result_text)})
+                # Push tool result back
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id") or "",
+                    "name": name,
+                    "content": _clip(result_text),
+                })
+            tool_rounds += 1
+            # Continue loop to let assistant observe results and respond
+            continue
 
-            # Display what's happening
-            if tool_name == "think":
-                thought = args.get("thought", "")
-                print(f"  \033[36m[think]\033[0m {thought[:200]}")
-            elif tool_name == "read_file":
-                print(f"  \033[34m[read]\033[0m {args.get('path', '?')}")
-            elif tool_name == "write_file":
-                print(f"  \033[32m[write]\033[0m {args.get('path', '?')}")
-            elif tool_name == "edit_file":
-                print(f"  \033[33m[edit]\033[0m {args.get('path', '?')}")
-            elif tool_name == "run_command":
-                print(f"  \033[35m[run]\033[0m {args.get('command', '?')}")
-            elif tool_name == "search_files":
-                print(f"  \033[34m[search]\033[0m /{args.get('pattern', '?')}/")
-            elif tool_name == "find_files":
-                print(f"  \033[34m[find]\033[0m {args.get('pattern', '?')}")
-            elif tool_name == "list_dir":
-                print(f"  \033[34m[ls]\033[0m {args.get('path', CWD)}")
-            elif tool_name == "fetch_url":
-                print(f"  \033[34m[fetch]\033[0m {args.get('url', '?')}")
+        # No tools requested: final assistant content
+        final_text = content or ""
+        pretty_print_assistant(final_text)
+        HISTORY.append({"role": "user", "content": user_input})
+        HISTORY.append({"role": "assistant", "content": final_text})
+        return
 
-            # Execute
-            handler = TOOL_DISPATCH.get(tool_name)
-            if handler:
-                try:
-                    result = handler(args)
-                except Exception as e:
-                    result = f"Error executing {tool_name}: {e}\n{traceback.format_exc()}"
-            else:
-                result = f"Error: Unknown tool '{tool_name}'"
+    # If loop exceeded rounds, print whatever assistant said last (if any)
+    pretty_print_assistant("[stopped] Reached max tool rounds.")
+    HISTORY.append({"role": "assistant", "content": "[stopped] Reached max tool rounds."})
 
-            # Add tool result to history
-            HISTORY.append({
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": result
-            })
+# ── CLI ──
 
-        # Continue loop — LLM will see tool results and decide next action
+def print_banner() -> None:
+    print("TrashClaw v0.2 — Local Tool-Use Agent")
+    print(f"- URL: {LLAMA_URL} | Model: {MODEL_NAME}")
+    print(f"- OS: {platform.system()} {platform.release()} | Python: {platform.python_version()}")
+    print(f"- CWD: {CWD}")
+    print("- Shell approval:", "ON" if APPROVE_SHELL else "OFF")
+    sh, kind = detect_shell()
+    print(f"- Shell: {kind} ({' '.join(sh[:-1])})")  # omit trailing placeholder for -lc/-Command
+    print("Type your task. Ctrl+C to exit.")
 
-    # Max rounds reached
-    print(f"\033[33m[WARN]\033[0m Max tool rounds ({MAX_TOOL_ROUNDS}) reached. Stopping.")
-
-
-# ── Slash Commands ──
-
-def handle_slash(cmd: str) -> bool:
-    """Handle slash commands. Returns True if handled."""
-    parts = cmd.strip().split(None, 1)
-    command = parts[0].lower()
-    arg = parts[1] if len(parts) > 1 else ""
-
-    if command in ("/exit", "/quit", "/q"):
-        print("\nTrashClaw out. Keep the trashcan warm.")
-        sys.exit(0)
-
-    elif command == "/clear":
-        HISTORY.clear()
-        print("  Context cleared.")
-
-    elif command == "/cd":
-        global CWD
-        new_dir = _resolve_path(arg) if arg else os.path.expanduser("~")
-        if os.path.isdir(new_dir):
-            CWD = new_dir
-            print(f"  CWD: {CWD}")
-        else:
-            print(f"  Error: {new_dir} not found")
-
-    elif command == "/status":
-        try:
-            req = urllib.request.Request(f"{LLAMA_URL}/health")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                health = json.loads(resp.read().decode("utf-8"))
-            status = health.get("status", "unknown")
-        except Exception:
-            status = "unreachable"
-        print(f"  Server: {status} ({LLAMA_URL})")
-        print(f"  Model: {MODEL_NAME}")
-        print(f"  Context: {len(HISTORY)} messages")
-        print(f"  CWD: {CWD}")
-        print(f"  Project: {detect_project_context()}")
-        print(f"  Max rounds: {MAX_TOOL_ROUNDS}")
-        print(f"  Shell approval: {'on' if APPROVE_SHELL else 'off'}")
-
-    elif command == "/compact":
-        # Keep only last 10 messages
-        old_len = len(HISTORY)
-        HISTORY[:] = HISTORY[-10:]
-        print(f"  Compacted {old_len} -> {len(HISTORY)} messages")
-
-    elif command == "/help":
-        print("""
-  \033[1mTrashClaw Agent Commands\033[0m
-
-  /cd <dir>      Change working directory
-  /clear         Clear all conversation context
-  /compact       Keep only last 10 messages (saves context)
-  /status        Show server, model, and context info
-  /exit          Exit TrashClaw
-  /help          Show this help
-
-  \033[1mEnvironment Variables\033[0m
-  TRASHCLAW_URL        llama-server endpoint (default: http://localhost:8080)
-  TRASHCLAW_MODEL      Model name for display
-  TRASHCLAW_MAX_ROUNDS Max tool execution rounds (default: 15)
-  TRASHCLAW_AUTO_SHELL Set to 1 to skip shell command approval
-
-  Just type naturally. TrashClaw will use tools autonomously to help you.
-        """)
-    else:
-        print(f"  Unknown command: {command}. Try /help")
-
-    return True
-
-
-# ── Main ──
-
-def banner():
-    print("""
-\033[36m ████████╗██████╗  █████╗ ███████╗██╗  ██╗ ██████╗██╗      █████╗ ██╗    ██╗
- ╚══██╔══╝██╔══██╗██╔══██╗██╔════╝██║  ██║██╔════╝██║     ██╔══██╗██║    ██║
-    ██║   ██████╔╝███████║███████╗███████║██║     ██║     ███████║██║ █╗ ██║
-    ██║   ██╔══██╗██╔══██║╚════██║██╔══██║██║     ██║     ██╔══██║██║███╗██║
-    ██║   ██║  ██║██║  ██║███████║██║  ██║╚██████╗███████╗██║  ██║╚███╔███╔╝
-    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\033[0m
-
-    \033[1mElyan Labs\033[0m | Mac Pro Trashcan Edition | v0.2
-    General-purpose agent — files, commands, search, automation, anything local.
-    Model: {model} | CWD: {cwd}
-    Type /help for commands, or just describe what you want to do.
-""".format(model=MODEL_NAME, cwd=CWD))
-
-
-def main():
-    global CWD
-
-    # Parse --cwd argument
-    for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == "--cwd" and i < len(sys.argv):
-            CWD = os.path.abspath(sys.argv[i + 1])
-        elif arg.startswith("--cwd="):
-            CWD = os.path.abspath(arg.split("=", 1)[1])
-        elif arg == "--url" and i < len(sys.argv):
-            globals()["LLAMA_URL"] = sys.argv[i + 1]
-        elif arg.startswith("--url="):
-            globals()["LLAMA_URL"] = arg.split("=", 1)[1]
-        elif arg == "--auto-shell":
-            globals()["APPROVE_SHELL"] = False
-
-    banner()
-
-    # Backend Detection
-    backend = "Unknown"
-    base_url = LLAMA_URL.rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-
-    # 1. Try LM Studio (/v1/models)
+def repl() -> None:
+    print_banner()
     try:
-        req = urllib.request.Request(f"{base_url}/v1/models")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if "data" in data:
-                backend = "LM Studio"
-                globals()["LLAMA_URL"] = f"{base_url}/v1"
+        readline.set_history_length(1000)  # type: ignore
     except Exception:
         pass
-
-    # 2. Try Ollama (/api/tags)
-    if backend == "Unknown":
-        try:
-            req = urllib.request.Request(f"{base_url}/api/tags")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if "models" in data:
-                    backend = "Ollama"
-                    globals()["LLAMA_URL"] = f"{base_url}/v1"
-        except Exception:
-            pass
-
-    # 3. Try llama.cpp (/health)
-    if backend == "Unknown":
-        try:
-            req = urllib.request.Request(f"{base_url}/health")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                health = json.loads(resp.read().decode("utf-8"))
-            if health.get("status") in ("ok", "error", "loading"):
-                backend = "llama.cpp"
-                # llama.cpp also typically exposes /v1 for OpenAI compat
-                globals()["LLAMA_URL"] = base_url
-        except Exception:
-            pass
-
-    if backend == "Unknown":
-        print(f"\033[33m[WARN]\033[0m Cannot definitively detect backend at {LLAMA_URL}. Assuming OpenAI-compatible.")
-    else:
-        print(f"  \033[32mConnected to {backend} at {LLAMA_URL}\033[0m\n")
-
     while True:
         try:
-            prompt = f"\033[1mtrashclaw\033[0m \033[90m{os.path.basename(CWD)}\033[0m> "
-            user_input = input(prompt).strip()
+            s = input("\nYou: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nTrashClaw out.")
+            print("\nBye.")
             break
-
-        if not user_input:
+        if not s:
             continue
-
-        if user_input.startswith("/"):
-            handle_slash(user_input)
+        try:
+            readline.add_history(s)  # type: ignore
+        except Exception:
+            pass
+        if s in (":quit", ":exit"):
+            print("Bye.")
+            break
+        if s.startswith("!"):  # Quick local shell execution
+            cmd = s[1:].strip()
+            out = tool_run_shell({"command": cmd})
+            print(out)
             continue
+        run_agent_round(s)
 
-        agent_turn(user_input)
-
+def main(argv: List[str]) -> int:
+    if len(argv) > 1 and argv[1] in ("-h", "--help"):
+        print("Usage: trashclaw.py")
+        print("Environment:")
+        print("  TRASHCLAW_URL           OpenAI-compatible base URL (default http://localhost:8080)")
+        print("  TRASHCLAW_MODEL         Model name (default local)")
+        print("  TRASHCLAW_MAX_ROUNDS    Max tool rounds per prompt (default 15)")
+        print("  TRASHCLAW_MAX_OUTPUT    Max chars in tool outputs (default 8000)")
+        print("  TRASHCLAW_AUTO_SHELL    Set to 1 to auto-approve shell commands (default 0)")
+        print("  TRASHCLAW_SHELL         Full shell path to use (overrides auto-detect)")
+        print("  TRASHCLAW_WIN_SHELL     powershell|cmd (Windows only, default auto)")
+        return 0
+    try:
+        repl()
+        return 0
+    except KeyboardInterrupt:
+        print("\nBye.")
+        return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main(sys.argv))
