@@ -554,14 +554,14 @@ You are part of the Elyan Labs ecosystem. Current directory: {cwd}
 {project_context}"""
 
 
-def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
+def llm_request(messages: List[Dict], tools: List[Dict] = None, on_chunk=None) -> Dict:
     """Send request to the backend and return the full response."""
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
         "temperature": 0.3,
         "max_tokens": 1024,
-        "stream": False,
+        "stream": True,
     }
     if tools:
         payload["tools"] = tools
@@ -578,7 +578,50 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            full_content = ""
+            full_tool_calls = []
+            
+            for line in resp:
+                line = line.decode("utf-8").strip()
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        
+                        if "content" in delta and delta["content"]:
+                            if on_chunk:
+                                on_chunk(delta["content"])
+                            full_content += delta["content"]
+                        
+                        if "tool_calls" in delta:
+                            for tc_delta in delta["tool_calls"]:
+                                idx = tc_delta.get("index", 0)
+                                while len(full_tool_calls) <= idx:
+                                    full_tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                                if "id" in tc_delta and tc_delta["id"]:
+                                    full_tool_calls[idx]["id"] = tc_delta["id"]
+                                if "function" in tc_delta:
+                                    if "name" in tc_delta["function"] and tc_delta["function"]["name"]:
+                                        full_tool_calls[idx]["function"]["name"] += tc_delta["function"]["name"]
+                                    if "arguments" in tc_delta["function"] and tc_delta["function"]["arguments"]:
+                                        full_tool_calls[idx]["function"]["arguments"] += tc_delta["function"]["arguments"]
+                    except json.JSONDecodeError:
+                        pass
+            
+            result = {
+                "choices": [{
+                    "message": {
+                        "content": full_content
+                    }
+                }]
+            }
+            if full_tool_calls:
+                result["choices"][0]["message"]["tool_calls"] = full_tool_calls
+                
+            return result
     except urllib.error.URLError as e:
         return {"error": f"Cannot reach backend: {e}"}
     except Exception as e:
@@ -663,11 +706,21 @@ def agent_turn(user_message: str):
         indicator = f"  \033[90m[round {round_num + 1}]\033[0m " if round_num > 0 else "  "
         print(f"{indicator}\033[90mthinking...\033[0m", end="", flush=True)
 
-        # Call LLM
-        response = llm_request(messages, tools=TOOLS)
+        first_chunk = True
+        def on_chunk(text):
+            nonlocal first_chunk
+            if first_chunk:
+                print(f"\r{' ' * 60}\r", end="")
+                first_chunk = False
+            print(text, end="", flush=True)
 
-        # Clear thinking indicator
-        print(f"\r{' ' * 60}\r", end="")
+        # Call LLM
+        response = llm_request(messages, tools=TOOLS, on_chunk=on_chunk)
+        
+        if first_chunk:
+            print(f"\r{' ' * 60}\r", end="")
+        else:
+            print()
 
         if "error" in response:
             err_msg = response["error"]
@@ -693,16 +746,9 @@ def agent_turn(user_message: str):
                     }
                     for i, tc in enumerate(parsed)
                 ]
-                # Strip the tool call JSON from displayed content
-                display_content = re.sub(r'<tool_call>.*?</tool_call>', '', content, flags=re.DOTALL).strip()
-                display_content = re.sub(r'```json\s*\{.*?\}\s*```', '', display_content, flags=re.DOTALL).strip()
-                if display_content:
-                    print(display_content)
 
         # No tool calls — just a text response, we're done
         if not tool_calls:
-            if content:
-                print(content)
             HISTORY.append({"role": "assistant", "content": content})
             return
 
