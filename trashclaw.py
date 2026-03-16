@@ -407,6 +407,36 @@ TOOL_DISPATCH = {
 }
 
 
+def detect_project_context() -> str:
+    """Scan CWD for common project files and return a summary of the framework/language."""
+    files = set(os.listdir(CWD))
+    context = []
+    
+    if "package.json" in files:
+        context.append("Node.js/JavaScript")
+    if "Cargo.toml" in files:
+        context.append("Rust")
+    if "requirements.txt" in files or "pyproject.toml" in files or "setup.py" in files:
+        context.append("Python")
+    if "go.mod" in files:
+        context.append("Go")
+    if "Makefile" in files:
+        context.append("Make")
+    if "CMakeLists.txt" in files:
+        context.append("C/C++ (CMake)")
+    if "pom.xml" in files or "build.gradle" in files:
+        context.append("Java")
+    if "composer.json" in files:
+        context.append("PHP (Composer)")
+    if "Gemfile" in files:
+        context.append("PHP (Composer)") # wait, gemfile is Ruby
+        context[-1] = "Ruby"
+        
+    if not context:
+        return "Unknown or Generic"
+    return ", ".join(context)
+
+
 # ── LLM Client ──
 
 SYSTEM_PROMPT = """You are TrashClaw, a general-purpose local agent running on the user's machine.
@@ -414,6 +444,9 @@ SYSTEM_PROMPT = """You are TrashClaw, a general-purpose local agent running on t
 You can accomplish any task that involves files, commands, or information on this system.
 You are not limited to coding — you handle research, system administration, file management,
 data processing, automation, and anything else the user asks.
+
+Current Directory: {cwd}
+Detected Project Context: {project_context}
 
 You have access to these tools:
 - read_file: Read file contents with optional line range
@@ -534,7 +567,7 @@ def agent_turn(user_message: str):
 
     for round_num in range(MAX_TOOL_ROUNDS):
         # Build messages
-        sys_prompt = SYSTEM_PROMPT.format(cwd=CWD)
+        sys_prompt = SYSTEM_PROMPT.format(cwd=CWD, project_context=detect_project_context())
         messages = [{"role": "system", "content": sys_prompt}]
         # Keep recent context
         messages.extend(HISTORY[-40:])
@@ -684,6 +717,7 @@ def handle_slash(cmd: str) -> bool:
         print(f"  Model: {MODEL_NAME}")
         print(f"  Context: {len(HISTORY)} messages")
         print(f"  CWD: {CWD}")
+        print(f"  Project: {detect_project_context()}")
         print(f"  Max rounds: {MAX_TOOL_ROUNDS}")
         print(f"  Shell approval: {'on' if APPROVE_SHELL else 'off'}")
 
