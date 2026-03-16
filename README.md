@@ -1,5 +1,9 @@
 # TrashClaw
 
+<p align="center">
+  <img src="trashy.png" alt="Trashy - the TrashClaw mascot" width="300">
+</p>
+
 A general-purpose local agent that runs on anything — including a 2013 Mac Pro that looks like a trash can. No cloud, no API keys, no dependencies beyond Python 3.7 and a llama-server.
 
 Think OpenClaw but it runs on your old hardware.
