@@ -49,21 +49,39 @@ Tool calls are parsed three ways for broad model compatibility:
 
 ## Setup
 
+### Option 1: llama.cpp (Recommended)
 ```bash
-# Build llama.cpp (or use Ollama, vLLM, anything OpenAI-compatible)
+# Build llama.cpp
 git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp && mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 
-# Get a model that does tool use
-mkdir -p ~/models
-curl -L -o ~/models/qwen2.5-3b-instruct-q4.gguf \
-  "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
-
 # Start the server
 ./bin/llama-server -m ~/models/qwen2.5-3b-instruct-q4.gguf -t 12 -c 4096
+```
 
-# Run the agent
+### Option 2: Ollama
+Ollama exposes an OpenAI-compatible endpoint. TrashClaw will automatically detect it and append `/v1`.
+```bash
+# Start an Ollama model that supports tools
+ollama run qwen2.5:3b
+
+# Run TrashClaw pointing to Ollama
+TRASHCLAW_URL=http://localhost:11434 python3 trashclaw.py
+```
+
+### Option 3: LM Studio
+LM Studio provides an easy GUI for running local models.
+1. Download a model that supports tools (e.g. Qwen 2.5 3B Instruct) in LM Studio.
+2. Start the Local Server in the LM Studio sidebar.
+3. Note the server URL (usually `http://localhost:1234/v1`).
+```bash
+TRASHCLAW_URL=http://localhost:1234/v1 python3 trashclaw.py
+```
+
+### Run the agent
+```bash
+# Once any of the above servers are running:
 python3 trashclaw.py
 ```
 

@@ -839,20 +839,52 @@ def main():
 
     banner()
 
-    # Check server
-    try:
-        req = urllib.request.Request(f"{LLAMA_URL}/health")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            health = json.loads(resp.read().decode("utf-8"))
-        if health.get("status") != "ok":
-            print(f"\033[33m[WARN]\033[0m Server status: {health}")
-    except Exception:
-        print(f"\033[31m[ERROR]\033[0m Cannot reach llama-server at {LLAMA_URL}")
-        print("  Start it with:")
-        print("  llama-server -m <model.gguf> --host 0.0.0.0 --port 8080 -t 10 -c 4096")
-        sys.exit(1)
+    # Backend Detection
+    backend = "Unknown"
+    base_url = LLAMA_URL.rstrip("/")
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
 
-    print(f"  \033[32mConnected to {LLAMA_URL}\033[0m\n")
+    # 1. Try LM Studio (/v1/models)
+    try:
+        req = urllib.request.Request(f"{base_url}/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "data" in data:
+                backend = "LM Studio"
+                globals()["LLAMA_URL"] = f"{base_url}/v1"
+    except Exception:
+        pass
+
+    # 2. Try Ollama (/api/tags)
+    if backend == "Unknown":
+        try:
+            req = urllib.request.Request(f"{base_url}/api/tags")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if "models" in data:
+                    backend = "Ollama"
+                    globals()["LLAMA_URL"] = f"{base_url}/v1"
+        except Exception:
+            pass
+
+    # 3. Try llama.cpp (/health)
+    if backend == "Unknown":
+        try:
+            req = urllib.request.Request(f"{base_url}/health")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                health = json.loads(resp.read().decode("utf-8"))
+            if health.get("status") in ("ok", "error", "loading"):
+                backend = "llama.cpp"
+                # llama.cpp also typically exposes /v1 for OpenAI compat
+                globals()["LLAMA_URL"] = base_url
+        except Exception:
+            pass
+
+    if backend == "Unknown":
+        print(f"\033[33m[WARN]\033[0m Cannot definitively detect backend at {LLAMA_URL}. Assuming OpenAI-compatible.")
+    else:
+        print(f"  \033[32mConnected to {backend} at {LLAMA_URL}\033[0m\n")
 
     while True:
         try:
