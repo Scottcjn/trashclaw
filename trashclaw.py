@@ -438,6 +438,16 @@ def tool_fetch_url(url: str) -> str:
         return f"Error fetching {url}: {str(e)}"
 
 
+def tool_git_status() -> str:
+    return tool_run_command("git status", timeout=10)
+
+def tool_git_diff() -> str:
+    return tool_run_command("git diff && echo '--- STAGED ---' && git diff --staged", timeout=10)
+
+def tool_git_commit(message: str) -> str:
+    return tool_run_command(f'git add -A && git commit -m "{message}"', timeout=15)
+
+
 def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
