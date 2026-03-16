@@ -521,12 +521,13 @@ You are part of the Elyan Labs ecosystem. Current directory: {cwd}"""
 
 
 def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
-    """Send request to llama-server and return the full response."""
+    """Send request to the LLM backend and stream the response."""
     payload = {
+        "model": MODEL_NAME,
         "messages": messages,
         "temperature": 0.3,
         "max_tokens": 1024,
-        "stream": False,
+        "stream": True,
     }
     if tools:
         payload["tools"] = tools
@@ -538,13 +539,70 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
         data=data,
         headers={"Content-Type": "application/json"},
     )
+    
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            # Clear the thinking indicator immediately when stream starts
+            print(f"\r{' ' * 60}\r", end="")
+            
+            full_content = ""
+            tool_calls = []
+            
+            for line in resp:
+                line = line.decode('utf-8').strip()
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    try:
+                        chunk = json.loads(line[6:])
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                            
+                        delta = choices[0].get("delta", {})
+                        
+                        if "content" in delta and delta["content"]:
+                            piece = delta["content"]
+                            full_content += piece
+                            print(piece, end="", flush=True)
+                            
+                        if "tool_calls" in delta:
+                            # reconstruct tool calls from streaming chunks
+                            for tc in delta["tool_calls"]:
+                                idx = tc.get("index", 0)
+                                while len(tool_calls) <= idx:
+                                    tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                                
+                                if "id" in tc and tc["id"]:
+                                    tool_calls[idx]["id"] += tc["id"]
+                                if "function" in tc:
+                                    func = tc["function"]
+                                    if "name" in func and func["name"]:
+                                        tool_calls[idx]["function"]["name"] += func["name"]
+                                    if "arguments" in func and func["arguments"]:
+                                        tool_calls[idx]["function"]["arguments"] += func["arguments"]
+                                        
+                    except json.JSONDecodeError:
+                        pass
+                        
+            if full_content:
+                print() # new line after stream
+            
+            message = {"role": "assistant"}
+            if full_content:
+                message["content"] = full_content
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+                
+            return {
+                "choices": [{
+                    "message": message,
+                    "finish_reason": "stop" if not tool_calls else "tool_calls"
+                }]
+            }
+            
     except urllib.error.URLError as e:
-        return {"error": f"Cannot reach llama-server: {e}"}
+        return {"error": f"Cannot reach LLM server at {LLAMA_URL}: {e}"}
     except Exception as e:
-        return {"error": f"LLM request failed: {e}"}
+        return {"error": f"LLM request failed: {e}\n{traceback.format_exc()}"}
 
 
 def _try_parse_tool_calls_from_text(text: str) -> Optional[List[Dict]]:
@@ -822,7 +880,7 @@ def banner():
 
 
 def main():
-    global CWD
+    global CWD, MODEL_NAME, LLAMA_URL
 
     # Parse --cwd argument
     for i, arg in enumerate(sys.argv[1:], 1):
@@ -831,15 +889,16 @@ def main():
         elif arg.startswith("--cwd="):
             CWD = os.path.abspath(arg.split("=", 1)[1])
         elif arg == "--url" and i < len(sys.argv):
-            globals()["LLAMA_URL"] = sys.argv[i + 1]
+            LLAMA_URL = sys.argv[i + 1]
         elif arg.startswith("--url="):
-            globals()["LLAMA_URL"] = arg.split("=", 1)[1]
+            LLAMA_URL = arg.split("=", 1)[1]
         elif arg == "--auto-shell":
             globals()["APPROVE_SHELL"] = False
 
     banner()
 
     # Check server
+    backend_type = "llama-server"
     try:
         req = urllib.request.Request(f"{LLAMA_URL}/health")
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -847,12 +906,31 @@ def main():
         if health.get("status") != "ok":
             print(f"\033[33m[WARN]\033[0m Server status: {health}")
     except Exception:
-        print(f"\033[31m[ERROR]\033[0m Cannot reach llama-server at {LLAMA_URL}")
-        print("  Start it with:")
-        print("  llama-server -m <model.gguf> --host 0.0.0.0 --port 8080 -t 10 -c 4096")
-        sys.exit(1)
+        # Fallback to Ollama or LM Studio
+        try:
+            req = urllib.request.Request(f"{LLAMA_URL}/api/tags")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = data.get("models", [])
+                if models:
+                    MODEL_NAME = models[0].get("name", MODEL_NAME)
+                    backend_type = "Ollama"
+        except Exception:
+            try:
+                req = urllib.request.Request(f"{LLAMA_URL}/v1/models")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    models = data.get("data", [])
+                    if models:
+                        MODEL_NAME = models[0].get("id", MODEL_NAME)
+                        backend_type = "LM Studio"
+            except Exception:
+                print(f"\033[31m[ERROR]\033[0m Cannot reach llama-server, Ollama, or LM Studio at {LLAMA_URL}")
+                print("  Start it with:")
+                print("  llama-server -m <model.gguf> --host 0.0.0.0 --port 8080")
+                sys.exit(1)
 
-    print(f"  \033[32mConnected to {LLAMA_URL}\033[0m\n")
+    print(f"  \033[32mConnected to {LLAMA_URL} ({backend_type}: {MODEL_NAME})\033[0m\n")
 
     while True:
         try:
