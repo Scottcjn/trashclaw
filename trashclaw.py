@@ -169,10 +169,124 @@ TOOLS = [
                 "required": ["thought"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Show git status - staged, unstaged, and untracked files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Git repository path"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show git diff of changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Git repository path"},
+                    "staged": {"type": "boolean", "description": "Show staged changes only"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Commit staged changes with a message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Commit message"},
+                    "path": {"type": "string", "description": "Git repository path"}
+                },
+                "required": ["message"]
+            }
+        }
     }
 ]
 
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+
+# Git tool implementations
+def tool_git_status(path: str = None) -> str:
+    """Show git status."""
+    repo = path or "."
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", repo, "status", "--porcelain"], 
+                         capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return f"Error: {r.stderr}"
+        if not r.stdout:
+            return "Working tree is clean"
+        
+        lines = r.stdout.strip().split(chr(10))
+        staged = [l for l in lines if l and l[0] in "MADR"]
+        unstaged = [l for l in lines if l and (l[0] == " " or l.startswith("??"))]
+        
+        out = []
+        if staged:
+            out.append("Staged:")
+            for s in staged:
+                out.append("  " + s[2:].strip())
+        if unstaged:
+            out.append("Unstaged:")
+            for u in unstaged:
+                out.append("  " + u[2:].strip())
+        return chr(10).join(out) if out else "Working tree is clean"
+    except FileNotFoundError:
+        return "Error: git not found"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def tool_git_diff(path: str = None, staged: bool = False) -> str:
+    """Show git diff."""
+    repo = path or "."
+    import subprocess
+    try:
+        cmd = ["git", "-C", repo] + (["diff", "--cached"] if staged else ["diff"])
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return f"Error: {r.stderr}"
+        out = r.stdout
+        if not out:
+            return "No changes"
+        return out[:8000] + ("...truncated" if len(out) > 8000 else "")
+    except FileNotFoundError:
+        return "Error: git not found"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def tool_git_commit(message: str, path: str = None) -> str:
+    """Commit staged changes."""
+    repo = path or "."
+    import subprocess
+    try:
+        check = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                              capture_output=True, text=True, timeout=10)
+        if not check.stdout.strip():
+            return "Nothing to commit"
+        
+        r = subprocess.run(["git", "-C", repo, "commit", "-m", message],
+                         capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return f"Error: {r.stderr}"
+        return f"Committed: {r.stdout}"
+    except FileNotFoundError:
+        return "Error: git not found"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 
 # ── Tool Implementations ──
 
@@ -453,6 +567,9 @@ TOOL_DISPATCH = {
     "list_dir": lambda args: tool_list_dir(args.get("path")),
     "fetch_url": lambda args: tool_fetch_url(args["url"]),
     "think": lambda args: tool_think(args["thought"]),
+    "git_status": lambda args: tool_git_status(args.get("path")),
+    "git_diff": lambda args: tool_git_diff(args.get("path"), args.get("staged", False)),
+    "git_commit": lambda args: tool_git_commit(args["message"], args.get("path")),
 }
 
 
