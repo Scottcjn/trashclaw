@@ -169,6 +169,46 @@ TOOLS = [
                 "required": ["thought"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Show the current git repository status (untracked, modified, staged files).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show the git diff of staged or unstaged changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "staged": {"type": "boolean", "description": "If true, show diff of staged changes. If false, unstaged."}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Commit staged changes with a message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Commit message"}
+                },
+                "required": ["message"]
+            }
+        }
     }
 ]
 
@@ -442,6 +482,25 @@ def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
 
+def tool_git_status() -> str:
+    """Show the current git repository status."""
+    return tool_run_command("git status")
+
+
+def tool_git_diff(staged: bool = False) -> str:
+    """Show the git diff of staged or unstaged changes."""
+    cmd = "git diff --staged" if staged else "git diff"
+    return tool_run_command(cmd)
+
+
+def tool_git_commit(message: str) -> str:
+    """Commit staged changes with a message."""
+    # We must escape double quotes in the message
+    escaped_msg = message.replace('"', '\\"')
+    cmd = f'git commit -m "{escaped_msg}"'
+    return tool_run_command(cmd)
+
+
 # Tool dispatch
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
@@ -453,6 +512,9 @@ TOOL_DISPATCH = {
     "list_dir": lambda args: tool_list_dir(args.get("path")),
     "fetch_url": lambda args: tool_fetch_url(args["url"]),
     "think": lambda args: tool_think(args["thought"]),
+    "git_status": lambda args: tool_git_status(),
+    "git_diff": lambda args: tool_git_diff(args.get("staged", False)),
+    "git_commit": lambda args: tool_git_commit(args["message"]),
 }
 
 
@@ -505,7 +567,11 @@ You have access to these tools:
 - search_files: Grep for patterns across files
 - find_files: Find files by glob pattern
 - list_dir: List directory contents
+- fetch_url: Fetch and read a webpage
 - think: Reason through a problem step by step before acting
+- git_status: Check repository status
+- git_diff: Review staged/unstaged changes
+- git_commit: Commit staged changes
 
 IMPORTANT RULES:
 1. Always read a file before editing it.
@@ -513,9 +579,10 @@ IMPORTANT RULES:
 3. Use think to plan multi-step tasks before starting.
 4. Be concise — every token counts.
 5. After making changes, verify them.
-6. If a command might be destructive, explain what it does first.
-7. Use run_command freely — curl for web requests, python for computation, etc.
-8. Chain tools together to accomplish complex tasks autonomously.
+6. Always review changes with git_diff before committing.
+7. If a command might be destructive, explain what it does first.
+8. Use run_command freely — curl for web requests, python for computation, etc.
+9. Chain tools together to accomplish complex tasks autonomously.
 
 You are part of the Elyan Labs ecosystem. Current directory: {cwd}"""
 
