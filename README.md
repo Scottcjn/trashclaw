@@ -45,21 +45,36 @@ Tool calls are parsed three ways for broad model compatibility:
 
 ## Setup
 
+TrashClaw automatically detects the backend you are using (llama-server, Ollama, or LM Studio) and formats tool requests accordingly.
+
+### Option 1: Ollama (Easiest)
 ```bash
-# Build llama.cpp (or use Ollama, vLLM, anything OpenAI-compatible)
+# Start Ollama and run a model that supports tool use
+ollama run qwen2.5:3b
+
+# In a new terminal, run TrashClaw (Ollama runs on port 11434 by default)
+TRASHCLAW_URL=http://localhost:11434 python3 trashclaw.py
+```
+
+### Option 2: LM Studio
+1. Open LM Studio and load a tool-compatible model.
+2. Start the Local Server (ensure the port is 1234).
+3. Run TrashClaw:
+```bash
+TRASHCLAW_URL=http://localhost:1234 python3 trashclaw.py
+```
+
+### Option 3: llama.cpp (Raw)
+```bash
+# Build llama.cpp
 git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp && mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 
-# Get a model that does tool use
-mkdir -p ~/models
-curl -L -o ~/models/qwen2.5-3b-instruct-q4.gguf \
-  "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
-
-# Start the server
+# Start the server with your model
 ./bin/llama-server -m ~/models/qwen2.5-3b-instruct-q4.gguf -t 12 -c 4096
 
-# Run the agent
+# Run TrashClaw
 python3 trashclaw.py
 ```
 

@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, Tuple, Any
 # ── Config ──
 LLAMA_URL = os.environ.get("TRASHCLAW_URL", "http://localhost:8080")
 MODEL_NAME = os.environ.get("TRASHCLAW_MODEL", "local")
+BACKEND_TYPE = "unknown"
 MAX_TOOL_ROUNDS = int(os.environ.get("TRASHCLAW_MAX_ROUNDS", "15"))
 MAX_OUTPUT_CHARS = 8000
 APPROVE_SHELL = os.environ.get("TRASHCLAW_AUTO_SHELL", "0") != "1"
@@ -554,8 +555,9 @@ You are part of the Elyan Labs ecosystem. Current directory: {cwd}
 
 
 def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
-    """Send request to llama-server and return the full response."""
+    """Send request to the backend and return the full response."""
     payload = {
+        "model": MODEL_NAME,
         "messages": messages,
         "temperature": 0.3,
         "max_tokens": 1024,
@@ -566,8 +568,11 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
         payload["tool_choice"] = "auto"
 
     data = json.dumps(payload).encode("utf-8")
+    
+    endpoint = f"{LLAMA_URL}/v1/chat/completions"
+    
     req = urllib.request.Request(
-        f"{LLAMA_URL}/v1/chat/completions",
+        endpoint,
         data=data,
         headers={"Content-Type": "application/json"},
     )
@@ -575,7 +580,7 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
         with urllib.request.urlopen(req, timeout=180) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as e:
-        return {"error": f"Cannot reach llama-server: {e}"}
+        return {"error": f"Cannot reach backend: {e}"}
     except Exception as e:
         return {"error": f"LLM request failed: {e}"}
 
@@ -798,13 +803,14 @@ def handle_slash(cmd: str) -> bool:
 
     elif command == "/status":
         try:
+            status = "online"
             req = urllib.request.Request(f"{LLAMA_URL}/health")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 health = json.loads(resp.read().decode("utf-8"))
             status = health.get("status", "unknown")
         except Exception:
             status = "unreachable"
-        print(f"  Server: {status} ({LLAMA_URL})")
+        print(f"  Backend: {BACKEND_TYPE} ({LLAMA_URL})")
         print(f"  Model: {MODEL_NAME}")
         print(f"  Context: {len(HISTORY)} messages")
         print(f"  CWD: {CWD}")
@@ -845,6 +851,46 @@ def handle_slash(cmd: str) -> bool:
 
 # ── Main ──
 
+
+def detect_backend():
+    global BACKEND_TYPE, MODEL_NAME
+    # Try llama-server
+    try:
+        req = urllib.request.Request(f"{LLAMA_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            health = json.loads(resp.read().decode("utf-8"))
+            if "status" in health:
+                BACKEND_TYPE = "llama-server"
+                return
+    except Exception:
+        pass
+
+    # Try Ollama (/api/tags)
+    try:
+        req = urllib.request.Request(f"{LLAMA_URL}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "models" in data and len(data["models"]) > 0:
+                BACKEND_TYPE = "ollama"
+                if MODEL_NAME == "local":
+                    MODEL_NAME = data["models"][0]["name"]
+                return
+    except Exception:
+        pass
+
+    # Try LM Studio / generic OpenAI (/v1/models)
+    try:
+        req = urllib.request.Request(f"{LLAMA_URL}/v1/models", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "data" in data and len(data["data"]) > 0:
+                BACKEND_TYPE = "lm-studio"
+                if MODEL_NAME == "local":
+                    MODEL_NAME = data["data"][0]["id"]
+                return
+    except Exception:
+        pass
+
 def banner():
     print("""
 \033[36m ████████╗██████╗  █████╗ ███████╗██╗  ██╗ ██████╗██╗      █████╗ ██╗    ██╗
@@ -879,20 +925,13 @@ def main():
 
     banner()
 
-    # Check server
-    try:
-        req = urllib.request.Request(f"{LLAMA_URL}/health")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            health = json.loads(resp.read().decode("utf-8"))
-        if health.get("status") != "ok":
-            print(f"\033[33m[WARN]\033[0m Server status: {health}")
-    except Exception:
-        print(f"\033[31m[ERROR]\033[0m Cannot reach llama-server at {LLAMA_URL}")
-        print("  Start it with:")
-        print("  llama-server -m <model.gguf> --host 0.0.0.0 --port 8080 -t 10 -c 4096")
+    detect_backend()
+    if BACKEND_TYPE == "unknown":
+        print(f"\033[31m[ERROR]\033[0m Cannot reach any known backend at {LLAMA_URL}")
+        print("  Ensure llama-server, Ollama, or LM Studio is running and the URL is correct.")
         sys.exit(1)
 
-    print(f"  \033[32mConnected to {LLAMA_URL}\033[0m\n")
+    print(f"  \033[32mConnected to {BACKEND_TYPE} at {LLAMA_URL} (Model: {MODEL_NAME})\033[0m\n")
 
     while True:
         try:
