@@ -530,6 +530,74 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
     }
     if tools:
         payload["tools"] = tools
+
+
+def llm_request_stream(messages: List[Dict], tools: List[Dict] = None) -> Dict:
+    """Send streaming request to llama-server and yield tokens."""
+    payload = {
+        "messages": messages,
+        "temperature": 0.3,
+        "max_tokens": 1024,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{LLAMA_URL}/v1/chat/completions",
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            # SSE streaming
+            buffer = ""
+            tool_call_buffer = ""
+            in_tool_call = False
+            
+            for line in resp:
+                line = line.decode('utf-8').strip()
+                if line.startswith('data: '):
+                    if line == 'data: [DONE]':
+                        break
+                    try:
+                        chunk = json.loads(line[6:])
+                        delta = chunk.get('choices', [{}])[0].get('delta', {})
+                        content = delta.get('content', '')
+                        if content:
+                            buffer += content
+                            yield {'type': 'content', 'content': content}
+                        
+                        # Check for tool calls in delta
+                        tc = delta.get('tool_calls', [])
+                        if tc:
+                            for tc_item in tc:
+                                func = tc_item.get('function', {})
+                                tool_call_buffer += func.get('arguments', '')
+                                yield {'type': 'tool_call', 'name': func.get('name', '')}
+                    except:
+                        pass
+            
+            # Try to parse final tool call
+            if tool_call_buffer:
+                try:
+                    args = json.loads(tool_call_buffer)
+                    yield {'type': 'tool_call_ready', 'arguments': args}
+                except:
+                    pass
+            
+            yield {'type': 'done', 'content': buffer}
+            
+    except urllib.error.URLError as e:
+        yield {'type': 'error', 'error': f"Cannot reach llama-server: {e}"}
+    except Exception as e:
+        yield {'type': 'error', 'error': f"LLM request failed: {e}"}
+
+
+
         payload["tool_choice"] = "auto"
 
     data = json.dumps(payload).encode("utf-8")
