@@ -30,9 +30,50 @@ MAX_TOOL_ROUNDS = int(os.environ.get("TRASHCLAW_MAX_ROUNDS", "15"))
 MAX_OUTPUT_CHARS = 8000
 APPROVE_SHELL = os.environ.get("TRASHCLAW_AUTO_SHELL", "0") != "1"
 HISTORY: List[Dict] = []
-CWD = os.getcwd()
 
-# ── Tool Definitions ──
+# Backend detection
+BACKEND_TYPE = None  # Will be set to: llama-server, ollama, lmstudio, or openai
+
+def detect_backend() -> str:
+    """Detect the type of LLM server running at LLAMA_URL."""
+    global BACKEND_TYPE
+    if BACKEND_TYPE is not None:
+        return BACKEND_TYPE
+    
+    try:
+        # Check if it's Ollama by looking for /api/tags
+        ollama_url = LLAMA_URL.rstrip('/') + '/api/tags'
+        req = urllib.request.Request(ollama_url)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if 'models' in data:
+                    BACKEND_TYPE = 'ollama'
+                    return BACKEND_TYPE
+        except urllib.error.HTTPError:
+            pass  # Not Ollama, try next
+        
+        # Check if it's LM Studio or OpenAI compatible
+        # Try the standard OpenAI endpoint
+        openai_url = LLAMA_URL.rstrip('/') + '/v1/models'
+        req = urllib.request.Request(openai_url)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if 'data' in data and isinstance(data.get('data'), list):
+                    BACKEND_TYPE = 'openai'
+                    return BACKEND_TYPE
+        except urllib.error.HTTPError:
+            pass
+        
+        # Fallback to llama-server (original behavior)
+        BACKEND_TYPE = 'llama-server'
+        return BACKEND_TYPE
+    except Exception as e:
+        # Default to llama-server on any error
+        BACKEND_TYPE = 'llama-server'
+        return BACKEND_TYPE
+# ── Tool Definitions ────# ── Tool Definitions ──
 
 TOOLS = [
     {
