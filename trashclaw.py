@@ -145,6 +145,60 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_url",
+            "description": "Fetch a URL and return its text content, stripped of HTML. Use for web browsing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Show the current git repository state.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show git diff for staged or unstaged changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "staged": {"type": "boolean", "description": "If true, show staged changes"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Commit staged changes with a message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Commit message"}
+                },
+                "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "think",
             "description": "Use this tool to think through a problem step by step before acting. No side effects.",
             "parameters": {
@@ -390,6 +444,57 @@ def tool_list_dir(path: str = None) -> str:
     return f"{target}:\n" + "\n".join(entries)
 
 
+
+
+def tool_fetch_url(url: str) -> str:
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+            # Strip HTML tags
+            text = re.sub(r'<style.*?</style>', '', html, flags=re.DOTALL|re.IGNORECASE)
+            text = re.sub(r'<script.*?</script>', '', text, flags=re.DOTALL|re.IGNORECASE)
+            text = re.sub(r'<[^>]+>', ' ', text)
+            text = re.sub(r'\s+', ' ', text).strip()
+            if len(text) > MAX_OUTPUT_CHARS:
+                text = text[:MAX_OUTPUT_CHARS] + "... [truncated]"
+            return text
+    except Exception as e:
+        return f"Error fetching {url}: {e}"
+
+def tool_git_status() -> str:
+    return tool_run_command("git status")
+
+def tool_git_diff(staged: bool = False) -> str:
+    cmd = "git diff --staged" if staged else "git diff"
+    return tool_run_command(cmd)
+
+def tool_git_commit(message: str) -> str:
+    escaped_msg = message.replace("'", "'\''")
+    return tool_run_command(f"git commit -m '{escaped_msg}'")
+
+def get_project_context(cwd: str) -> str:
+    context = []
+    try:
+        files = set(os.listdir(cwd))
+    except Exception:
+        return "No specific framework detected."
+        
+    if "package.json" in files:
+        context.append("Node.js/JavaScript project detected (package.json).")
+    if "Cargo.toml" in files:
+        context.append("Rust project detected (Cargo.toml).")
+    if "pyproject.toml" in files or "requirements.txt" in files:
+        context.append("Python project detected.")
+    if "Makefile" in files:
+        context.append("Makefile present (C/C++ or general build).")
+    if "go.mod" in files:
+        context.append("Go project detected (go.mod).")
+    
+    if not context:
+        return "No specific framework detected."
+    return "Project Context: " + " ".join(context)
+
 def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
@@ -403,6 +508,11 @@ TOOL_DISPATCH = {
     "search_files": lambda args: tool_search_files(args["pattern"], args.get("path"), args.get("glob_filter")),
     "find_files": lambda args: tool_find_files(args["pattern"], args.get("path")),
     "list_dir": lambda args: tool_list_dir(args.get("path")),
+    "fetch_url": lambda args: tool_fetch_url(args["url"]),
+    "git_status": lambda args: tool_git_status(),
+    "git_diff": lambda args: tool_git_diff(args.get("staged", False)),
+    "git_commit": lambda args: tool_git_commit(args["message"]),
+
     "think": lambda args: tool_think(args["thought"]),
 }
 
@@ -423,6 +533,10 @@ You have access to these tools:
 - search_files: Grep for patterns across files
 - find_files: Find files by glob pattern
 - list_dir: List directory contents
+- fetch_url: Fetch and summarize a web page
+- git_status: Show git status
+- git_diff: Show git diff
+- git_commit: Commit staged changes
 - think: Reason through a problem step by step before acting
 
 IMPORTANT RULES:
@@ -435,7 +549,8 @@ IMPORTANT RULES:
 7. Use run_command freely — curl for web requests, python for computation, etc.
 8. Chain tools together to accomplish complex tasks autonomously.
 
-You are part of the Elyan Labs ecosystem. Current directory: {cwd}"""
+You are part of the Elyan Labs ecosystem. Current directory: {cwd}
+{project_context}"""
 
 
 def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
@@ -534,7 +649,7 @@ def agent_turn(user_message: str):
 
     for round_num in range(MAX_TOOL_ROUNDS):
         # Build messages
-        sys_prompt = SYSTEM_PROMPT.format(cwd=CWD)
+        sys_prompt = SYSTEM_PROMPT.format(cwd=CWD, project_context=get_project_context(CWD))
         messages = [{"role": "system", "content": sys_prompt}]
         # Keep recent context
         messages.extend(HISTORY[-40:])
@@ -623,6 +738,15 @@ def agent_turn(user_message: str):
                 print(f"  \033[34m[find]\033[0m {args.get('pattern', '?')}")
             elif tool_name == "list_dir":
                 print(f"  \033[34m[ls]\033[0m {args.get('path', CWD)}")
+            elif tool_name == "fetch_url":
+                print(f"  \033[34m[fetch]\033[0m {args.get('url', '?')}")
+            elif tool_name == "git_status":
+                print(f"  \033[35m[git status]\033[0m")
+            elif tool_name == "git_diff":
+                print(f"  \033[35m[git diff]\033[0m staged={args.get('staged', False)}")
+            elif tool_name == "git_commit":
+                print(f"  \033[35m[git commit]\033[0m {args.get('message', '?')[:50]}")
+
 
             # Execute
             handler = TOOL_DISPATCH.get(tool_name)
@@ -684,6 +808,7 @@ def handle_slash(cmd: str) -> bool:
         print(f"  Model: {MODEL_NAME}")
         print(f"  Context: {len(HISTORY)} messages")
         print(f"  CWD: {CWD}")
+        print(f"  Project: {get_project_context(CWD)}")
         print(f"  Max rounds: {MAX_TOOL_ROUNDS}")
         print(f"  Shell approval: {'on' if APPROVE_SHELL else 'off'}")
 
