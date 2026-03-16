@@ -145,6 +145,20 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_url",
+            "description": "Fetch a URL and return its readable text content. Strips HTML tags. Good for browsing the web.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch (e.g. https://example.com)"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "think",
             "description": "Use this tool to think through a problem step by step before acting. No side effects.",
             "parameters": {
@@ -390,6 +404,40 @@ def tool_list_dir(path: str = None) -> str:
     return f"{target}:\n" + "\n".join(entries)
 
 
+def tool_fetch_url(url: str) -> str:
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TrashClaw/0.2'})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+            
+            # Simple heuristic HTML tag stripping without external dependencies
+            # 1. Remove style and script blocks
+            html = re.sub(r'<script.*?>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            html = re.sub(r'<style.*?>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            
+            # 2. Remove all HTML tags
+            text = re.sub(r'<[^>]+>', ' ', html)
+            
+            # 3. Fix HTML entities
+            text = text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&quot;', '"').replace('&#39;', "'")
+            
+            # 4. Collapse whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            if not text:
+                return f"Fetched {url} successfully, but found no readable text."
+                
+            if len(text) > MAX_OUTPUT_CHARS:
+                return f"Fetched {url}:\n\n{text[:MAX_OUTPUT_CHARS]}... [truncated]"
+            return f"Fetched {url}:\n\n{text}"
+    except urllib.error.HTTPError as e:
+        return f"HTTP Error fetching {url}: {e.code} {e.reason}"
+    except urllib.error.URLError as e:
+        return f"URL Error fetching {url}: {e.reason}"
+    except Exception as e:
+        return f"Error fetching {url}: {str(e)}"
+
+
 def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
@@ -403,6 +451,7 @@ TOOL_DISPATCH = {
     "search_files": lambda args: tool_search_files(args["pattern"], args.get("path"), args.get("glob_filter")),
     "find_files": lambda args: tool_find_files(args["pattern"], args.get("path")),
     "list_dir": lambda args: tool_list_dir(args.get("path")),
+    "fetch_url": lambda args: tool_fetch_url(args["url"]),
     "think": lambda args: tool_think(args["thought"]),
 }
 
@@ -623,6 +672,8 @@ def agent_turn(user_message: str):
                 print(f"  \033[34m[find]\033[0m {args.get('pattern', '?')}")
             elif tool_name == "list_dir":
                 print(f"  \033[34m[ls]\033[0m {args.get('path', CWD)}")
+            elif tool_name == "fetch_url":
+                print(f"  \033[34m[fetch]\033[0m {args.get('url', '?')}")
 
             # Execute
             handler = TOOL_DISPATCH.get(tool_name)
