@@ -145,6 +145,44 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "git_status",
+            "description": "Show the current git repository state, including staged and unstaged files.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show the git diff of staged and unstaged changes to review before committing.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Commit all current changes with a given message. Automatically stages all tracked modifications.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "The commit message"}
+                },
+                "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "think",
             "description": "Use this tool to think through a problem step by step before acting. No side effects.",
             "parameters": {
