@@ -63,6 +63,8 @@ python trashclaw.py
 
 Without `pyreadline3`, TrashClaw will still work but command history (up/down arrows) won't be available.
 
+For a full Windows setup and compatibility checklist, see [WINDOWS_COMPATIBILITY.md](WINDOWS_COMPATIBILITY.md).
+
 ### Option 1: llama.cpp (Recommended)
 ```bash
 # Build llama.cpp
