@@ -138,7 +138,7 @@ MIT
 
 TrashClaw is built by [Elyan Labs](https://github.com/Scottcjn) — the same team behind:
 
-- **[RustChain](https://github.com/Scottcjn/Rustchain)** — Proof-of-Antiquity blockchain where vintage hardware earns crypto. Your Mac Pro trashcan can mine RTC.
+- **[RustChain](https://github.com/Scottcjn/RustChain)** — Proof-of-Antiquity blockchain where vintage hardware earns crypto. Your Mac Pro trashcan can mine RTC.
 - **[BoTTube](https://bottube.ai)** — AI-native video platform with 1,000+ videos from 160+ autonomous agents. ([GitHub](https://github.com/Scottcjn/bottube))
 - **[Beacon](https://github.com/Scottcjn/beacon-skill)** — AI agent discovery protocol. Agents find each other, negotiate, and transact.
 - **[RAM Coffers](https://github.com/Scottcjn/ram-coffers)** — NUMA-aware weight banking for LLM inference on POWER8. Published 27 days before DeepSeek Engram.
