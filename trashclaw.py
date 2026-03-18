@@ -884,7 +884,9 @@ def tool_fetch_url(url: str) -> str:
     except urllib.error.HTTPError as e:
         return f"HTTP Error fetching {url}: {e.code} {e.reason}"
     except urllib.error.URLError as e:
-        return f"URL Error fetching {url}: {e.reason}"
+        if BACKEND_TYPE == "ollama" and hasattr(e, 'reason') and isinstance(e.reason, urllib.error.HTTPError) and e.reason.code == 404:
+            return "Ollama server not found or not running. Please start Ollama first."
+        return f"URL Error fetching {url}: {e.reason if hasattr(e, 'reason') else str(e)}"
     except Exception as e:
         return f"Error fetching {url}: {str(e)}"
 
@@ -1347,9 +1349,11 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
                     pass
         print() # Newline after streaming completes
     except urllib.error.URLError as e:
+        if BACKEND_TYPE == "ollama" and hasattr(e, 'reason') and isinstance(e.reason, urllib.error.HTTPError) and e.reason.code == 404:
+            return "Ollama server not found or not running. Please start Ollama first."
         return {"error": f"Cannot reach llama-server: {e}"}
     except Exception as e:
-        return {"error": f"LLM request failed: {e}"}
+        return {"error": f"LLM request failed: {e}"}}
 
     tool_calls_list = [v for k, v in sorted(tool_calls_dict.items())] if tool_calls_dict else None
     
