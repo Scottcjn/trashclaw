@@ -1,1 +1,1 @@
-# tests package
+# TrashClaw test suite
