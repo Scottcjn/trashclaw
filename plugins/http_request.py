@@ -110,3 +110,50 @@ def run(url: str, method: str = "GET", headers: Optional[Dict[str, str]] = None,
         return f"URL Error: {e.reason}\nURL: {url}"
     except Exception as e:
         return f"Request failed: {type(e).__name__}: {e}"
+
+
+# path/to/config_loader.py
+import os
+import tomllib
+import json
+from typing import List, Dict, Union
+
+class TrashClawConfig:
+    def __init__(self, context_files: List[str], system_prompt: str, model: str, auto_shell: bool):
+        self.context_files = context_files
+        self.system_prompt = system_prompt
+        self.model = model
+        self.auto_shell = auto_shell
+
+    @classmethod
+    def from_file(cls, file_path: str) -> 'TrashClawConfig':
+        """Load configuration from the specified TOML or JSON file."""
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"Configuration file '{file_path}' does not exist.")
+
+        ext = os.path.splitext(file_path)[1]
+        
+        if ext == ".toml":
+            with open(file_path, 'rb') as f:
+                config_data = tomllib.load(f)
+        elif ext == ".json":
+            with open(file_path, 'r') as f:
+                config_data = json.load(f)
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
+
+        return cls(
+            context_files=config_data.get('context_files', []),
+            system_prompt=config_data.get('system_prompt', ''),
+            model=config_data.get('model', 'default_model'),
+            auto_shell=config_data.get('auto_shell', False)
+        )
+
+def load_config() -> TrashClawConfig:
+    """Attempts to load configuration from the .trashclaw.toml or .trashclaw.json in the current working directory."""
+    for config_file in ['.trashclaw.toml', '.trashclaw.json']:
+        try:
+            return TrashClawConfig.from_file(os.path.join(os.getcwd(), config_file))
+        except (FileNotFoundError, ValueError):
+            continue
+    raise FileNotFoundError("No valid TrashClaw configuration file found.")
