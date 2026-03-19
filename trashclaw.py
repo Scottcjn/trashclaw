@@ -22,6 +22,8 @@ import difflib
 import traceback
 import time
 import signal
+import base64
+import mimetypes
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -171,6 +173,8 @@ APPROVED_COMMANDS: set = set()
 EXTRA_SYSTEM_PROMPT: str = ""
 LAST_ASSISTANT_RESPONSE: str = ""  # For /pipe command
 LAST_GENERATION_STATS: Dict = {}  # {tokens, seconds, tokens_per_sec} for /stats
+PENDING_IMAGES: List[str] = []  # Paths of images to include in next user message
+VISION_SUPPORTED: Optional[bool] = None  # None = not yet checked
 ACHIEVEMENTS_FILE = os.path.join(CONFIG_DIR, "achievements.json")
 
 # ── Trashy's Soul ──
@@ -629,7 +633,8 @@ def _load_project_instructions() -> str:
 
 SLASH_COMMANDS = ["/about", "/achievements", "/add", "/cd", "/clear", "/compact",
                   "/config", "/diff", "/exit", "/export", "/help", "/load", "/model",
-                  "/pipe", "/plugins", "/quit", "/remember", "/save", "/sessions", "/status", "/undo"]
+                  "/pipe", "/plugins", "/quit", "/remember", "/save", "/sessions",
+                  "/stats", "/status", "/undo", "/screenshot"]
 
 
 def _setup_tab_completion():
@@ -1141,6 +1146,110 @@ def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
 
+def _check_vision_support() -> bool:
+    """Check if the current model supports vision/multimodal input."""
+    global VISION_SUPPORTED
+    if VISION_SUPPORTED is not None:
+        return VISION_SUPPORTED
+    try:
+        base_url = LLAMA_URL.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        req = urllib.request.Request(f"{base_url}/v1/models")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        models = data.get("data", [])
+        if models and isinstance(models[0], dict):
+            # Check for multimodal/vision indicators
+            for m in models:
+                model_id = m.get("id", "")
+                if MODEL_NAME and MODEL_NAME not in model_id:
+                    continue
+                # OpenAI-style: capabilities or modality fields
+                caps = m.get("capabilities", {})
+                if caps.get("vision") or caps.get("image"):
+                    VISION_SUPPORTED = True
+                    return True
+                # Ollama-style: check if model name contains vision variants
+                modality = m.get("modality", "")
+                if "vision" in modality.lower() or "multimodal" in modality.lower():
+                    VISION_SUPPORTED = True
+                    return True
+            # Fallback: assume support if API is reachable (most modern servers handle it)
+            VISION_SUPPORTED = True
+            return True
+    except Exception:
+        pass
+    VISION_SUPPORTED = False
+    return False
+
+
+def _encode_image(path: str) -> Optional[Tuple[str, str]]:
+    """Encode an image file as base64. Returns (mime_type, base64_str) or None on failure."""
+    path = _resolve_path(path)
+    if not os.path.isfile(path):
+        return None
+    mime, _ = mimetypes.guess_type(path)
+    if not mime or not mime.startswith("image/"):
+        return None
+    try:
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("utf-8")
+        return (mime, data)
+    except Exception:
+        return None
+
+
+def tool_view_image(path: str) -> str:
+    """Read an image file and queue it for inclusion in the next LLM request."""
+    if not _check_vision_support():
+        return "Error: The current model does not support vision/image input. Cannot view images."
+    encoded = _encode_image(path)
+    if encoded is None:
+        resolved = _resolve_path(path)
+        if not os.path.isfile(resolved):
+            return f"Error: File not found: {path}"
+        return f"Error: {path} does not appear to be a supported image format (PNG, JPG, GIF, WebP, BMP)."
+    PENDING_IMAGES.append(_resolve_path(path))
+    return f"Image queued for analysis: {path} (will be included with the next message)"
+
+
+def _take_screenshot() -> str:
+    """Take a screenshot using available system tools. Returns path to saved file or error."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = os.path.join(CWD, ".trashclaw", "screenshots")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Try different screenshot tools
+    if sys.platform == "darwin":
+        # macOS: use screencapture
+        path = os.path.join(save_dir, f"screenshot_{timestamp}.png")
+        r = subprocess.run(["screencapture", "-x", path], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and os.path.isfile(path):
+            return path
+        return "Error: screencapture failed"
+    elif sys.platform == "linux":
+        # Linux: try gnome-screenshot, scrot, xdotool+import
+        for cmd in [
+            ["gnome-screenshot", "-f"],
+            ["scrot", "-z"],
+            ["import", "-window", "root"],
+        ]:
+            path = os.path.join(save_dir, f"screenshot_{timestamp}.png")
+            try:
+                full_cmd = cmd + [path]
+                r = subprocess.run(full_cmd, capture_output=True, text=True, timeout=10)
+                if r.returncode == 0 and os.path.isfile(path):
+                    return path
+            except (FileNotFoundError, Exception):
+                continue
+        return "Error: No screenshot tool found. Install gnome-screenshot, scrot, or ImageMagick."
+    elif sys.platform == "win32":
+        # Windows: not easily done from stdlib alone
+        return "Error: Screenshots not supported on Windows (requires external tools). Use view_image with a file path instead."
+    return "Error: Unsupported platform."
+
+
 # Tool dispatch
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
@@ -1157,6 +1266,7 @@ TOOL_DISPATCH = {
     "git_commit": lambda args: tool_git_commit(args["message"]),
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
+    "view_image": lambda args: tool_view_image(args["path"]),
 }
 
 
@@ -1265,6 +1375,7 @@ TOOLS:
 - git_status / git_diff / git_commit: Git operations
 - clipboard: Read/write system clipboard
 - think: Reason step by step before acting
+- view_image: Include an image file for visual analysis (requires vision-capable model)
 
 BOUDREAUX RULES:
 These are non-negotiable. They come from building real systems on real hardware.
@@ -1520,7 +1631,28 @@ def agent_turn(user_message: str):
     """Run the full agent loop: LLM thinks, calls tools, observes, repeats."""
     global _INTERRUPTED
     _INTERRUPTED = False
-    HISTORY.append({"role": "user", "content": user_message})
+    # Build multimodal content if there are pending images
+    if PENDING_IMAGES:
+        image_parts = []
+        valid_images = []
+        for img_path in PENDING_IMAGES:
+            encoded = _encode_image(img_path)
+            if encoded:
+                mime, b64 = encoded
+                image_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}"}
+                })
+                valid_images.append(img_path)
+        if image_parts:
+            multimodal_content = [{"type": "text", "text": user_message}] + image_parts
+            HISTORY.append({"role": "user", "content": multimodal_content})
+            PENDING_IMAGES.clear()
+        else:
+            HISTORY.append({"role": "user", "content": user_message})
+            PENDING_IMAGES.clear()
+    else:
+        HISTORY.append({"role": "user", "content": user_message})
     ACHIEVEMENTS["stats"]["total_turns"] = ACHIEVEMENTS["stats"].get("total_turns", 0) + 1
     _auto_compact()
 
@@ -2107,6 +2239,18 @@ def handle_slash(cmd: str) -> bool:
                 except Exception as e:
                     print(f"  Error saving config: {e}")
 
+    elif command == "/screenshot":
+        if not _check_vision_support():
+            print("  Error: The current model does not support vision/image input.")
+        else:
+            screenshot_path = _take_screenshot()
+            if screenshot_path.startswith("Error"):
+                print(f"  {screenshot_path}")
+            else:
+                PENDING_IMAGES.append(screenshot_path)
+                print(f"  [32m[screenshot][0m Saved to {screenshot_path}")
+                print(f"  Image queued — send a message to have the LLM analyze it.")
+
     elif command == "/help":
         print("""
   \033[1mTrashClaw v{ver} — Commands\033[0m
@@ -2114,6 +2258,7 @@ def handle_slash(cmd: str) -> bool:
   /cd <dir>      Change working directory
   /clear         Clear all conversation context
   /compact       Keep only last 10 messages
+  /screenshot    Take a screenshot and queue it for LLM analysis
   /status        Server, model, context, git branch, stats
   /add <files>   Pre-load files into agent context
   /diff          Show all file changes this session
