@@ -1,0 +1,105 @@
+# Proposed Fix for #64
+
+```diff
+--- a/trashclaw.py
++++ b/trashclaw.py
+@@ -47,6 +47,7 @@ APPROVED_COMMANDS: set = set()
+ EXTRA_SYSTEM_PROMPT: str = ""
+ ACHIEVEMENTS_FILE = os.path.join(CONFIG_DIR, "achievements.json")
+ 
++SESSION_STATS: Dict[str, Any] = {"total_tokens": 0, "total_time": 0.0, "turns": 0}
+ 
+ # ── Trashy's Soul ──
+ 
+@@ -164,6 +165,20 @@ def _track_tool(tool_name: str):
+ 
+     _save_achievements(ACHIEVEMENTS)
++
++
++def _display_turn_stats(token_count: int, elapsed: float):
++    """Display generation stats after a turn and update cumulative session stats."""
++    SESSION_STATS["total_tokens"] += token_count
++    SESSION_STATS["total_time"] += elapsed
++    SESSION_STATS["turns"] += 1
++
++    tok_per_sec = token_count / elapsed if elapsed > 0 else 0.0
++    print(f"\n  \033[90m[{tok_per_sec:.1f} tok/s | {token_count} tokens | {elapsed:.1f}s]\033[0m")
++
++
+ CWD = os.getcwd()
+ _INTERRUPTED = False
+ 
+```
+
+Now for the core change inside `llm_request()` — wrapping the streaming loop with timing and chunk counting:
+
+```diff
+--- a/trashclaw.py
++++ b/trashclaw.py
+@@ -STREAMING_SECTION
+ def llm_request(messages, tools=None):
+     """Send a chat completion request to the LLM and stream the response."""
++    turn_tokens = 0
++    turn_start = time.time()
++
+     # ... (existing payload setup code remains unchanged) ...
+ 
+     # Inside the streaming response loop, where content chunks are processed:
+     # For each content delta received from the stream:
+-                    sys.stdout.write(text)
+-                    sys.stdout.flush()
++                    turn_tokens += 1
++                    sys.stdout.write(text)
++                    sys.stdout.flush()
+ 
+     # After the streaming loop completes and before returning:
++    turn_elapsed = time.time() - turn_start
++    if turn_tokens > 0:
++        _display_turn_stats(turn_tokens, turn_elapsed)
++
+     return msg
+```
+
+And for the `/status` command handler:
+
+```diff
+--- a/trashclaw.py
++++ b/trashclaw.py
+@@ -STATUS_COMMAND_SECTION
+         elif user_input == "/status":
+             branch = _git_branch()
+             est_tokens = _estimate_tokens(HISTORY)
+             hw = _detect_hardware()
+             print(f"\n  \033[36mTrashClaw v{VERSION}\033[0m")
+             print(f"  Model:    {MODEL_NAME}")
+             print(f"  Server:   {LLAMA_URL}")
+             print(f"  CWD:      {CWD}")
+             if branch:
+                 print(f"  Branch:   {branch}")
+             if hw.get("special"):
+                 print(f"  Hardware: {hw['special']}")
+             print(f"  Context:  ~{est_tokens} tokens ({len(HISTORY)} messages)")
+             print(f"  Tools:    {len(TOOLS)} loaded")
++            # Cumulative session generation stats
++            s = SESSION_STATS
++            if s["turns"] > 0:
++                avg_tps = s["total_tokens"] / s["total_time"] if s["total_time"] > 0 else 0.0
++                print(f"  Session:  {s['total_tokens']} tokens | {s['total_time']:.1f}s | {avg_tps:.1f} avg tok/s | {s['turns']} turns")
++            else:
++                print(f"  Session:  no generation stats yet")
+             print()
+             continue
+```
+
+To summarize the complete set of changes to `trashclaw.py`:
+
+1. **Line ~48 (after `ACHIEVEMENTS_FILE`)**: Add `SESSION_STATS` global dict tracking `total_tokens`, `total_time`, and `turns`.
+
+2. **Line ~166 (after `_track_tool`)**: Add `_display_turn_stats(token_count, elapsed)` helper that updates `SESSION_STATS` and prints the formatted stats line in dim gray: `[12.4 tok/s | 847 tokens | 68.3s]`.
+
+3. **Inside `llm_request()`**: 
+   - Add `turn_tokens = 0` and `turn_start = time.time()` at the top of the function.
+   - Increment `turn_tokens += 1` each time a content chunk/delta is received in the streaming loop (each SSE content chunk approximates one token).
+   - After the streaming loop ends, compute `turn_elapsed = time.time() - turn_start` and call `_display_turn_stats(turn_tokens, turn_elapsed)` if any tokens were generated.
+
+4. **In the `/status` command handler**: After the existing status lines (context, tools), add a session stats line showing cumulative totals: `Session: 2431 tokens | 194.2s | 12.5 avg tok/s | 8 turns`.
