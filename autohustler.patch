@@ -1,0 +1,14 @@
+```diff
+--- a/trashclaw.py
++++ b/trashclaw.py
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+ """
+-TrashClaw v0.3 — Local Tool-Use Agent
+-======================================
++TrashClaw v0.7 — Local Tool-Use Agent
++=====================================
+ A general-purpose agent powered by a local LLM. Reads files, writes files,
+ runs commands, searches codebases, manages git — whatever you need.
+ OpenClaw-style tool-use loop with zero external dependencies.
+```
