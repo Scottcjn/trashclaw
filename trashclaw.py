@@ -22,6 +22,7 @@ import difflib
 import traceback
 import time
 import signal
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -458,6 +459,34 @@ TOOLS = [
                 "required": ["action"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_image",
+            "description": "Read an image file and return it as base64-encoded data for vision models. Use this to send images to the LLM if it supports vision.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the image file (PNG, JPG, GIF, WebP)"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screenshot",
+            "description": "Take a screenshot of the current screen and save it to a file. Returns the file path. Use with view_image to send to vision models.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Optional filename for the screenshot (default: screenshot_TIMESTAMP.png)"}
+                },
+                "required": []
+            }
+        }
     }
 ]
 
@@ -561,7 +590,8 @@ def _load_project_instructions() -> str:
 
 SLASH_COMMANDS = ["/about", "/achievements", "/add", "/cd", "/clear", "/compact",
                   "/config", "/diff", "/exit", "/export", "/help", "/load", "/model",
-                  "/pipe", "/plugins", "/quit", "/remember", "/save", "/sessions", "/status", "/undo"]
+                  "/pipe", "/plugins", "/quit", "/remember", "/save", "/screenshot", 
+                  "/sessions", "/status", "/undo"]
 
 
 def _setup_tab_completion():
@@ -1073,6 +1103,106 @@ def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
 
+def tool_view_image(path: str) -> str:
+    """Read an image file and return base64-encoded data for vision models."""
+    path = _resolve_path(path)
+    
+    # Check file extension
+    valid_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in valid_extensions:
+        return f"Error: Unsupported image format '{ext}'. Supported: {', '.join(valid_extensions)}"
+    
+    if not os.path.exists(path):
+        return f"Error: File not found: {path}"
+    
+    try:
+        with open(path, "rb") as f:
+            image_data = f.read()
+        
+        # Encode to base64
+        base64_data = base64.b64encode(image_data).decode('ascii')
+        
+        # Determine MIME type
+        mime_types = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp'
+        }
+        mime_type = mime_types.get(ext, 'application/octet-stream')
+        
+        # Return data URL format for OpenAI API
+        data_url = f"data:{mime_type};base64,{base64_data}"
+        size_kb = len(image_data) // 1024
+        
+        return f"Image loaded: {path} ({size_kb}KB)\nData URL: {data_url[:200]}...[truncated]"
+    except Exception as e:
+        return f"Error reading image {path}: {e}"
+
+
+def tool_screenshot(filename: str = None) -> str:
+    """Take a screenshot and save it to a file. Returns the path."""
+    # Default filename
+    if not filename:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"screenshot_{timestamp}.png"
+    
+    screenshot_path = _resolve_path(filename)
+    
+    # Platform-specific screenshot commands
+    if sys.platform == "win32":
+        # Windows: Use PowerShell
+        ps_script = f"""
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen
+$bitmap = New-Object System.Drawing.Bitmap $screen.Bounds.Width, $screen.Bounds.Height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($screen.Bounds.X, $screen.Bounds.Y, 0, 0, $bitmap.Size)
+$bitmap.Save('{screenshot_path.replace("\\", "\\\\")}')
+$graphics.Dispose()
+$bitmap.Dispose()
+"""
+        try:
+            result = subprocess.run(
+                ["powershell", "-Command", ps_script],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return f"Error taking screenshot: {result.stderr}"
+        except Exception as e:
+            return f"Error taking screenshot: {e}"
+    elif sys.platform == "darwin":
+        # macOS: Use screencapture
+        try:
+            result = subprocess.run(
+                ["screencapture", screenshot_path],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return f"Error taking screenshot: {result.stderr}"
+        except Exception as e:
+            return f"Error taking screenshot: {e}"
+    else:
+        # Linux: Try scrot, then gnome-screenshot, then import (ImageMagick)
+        for cmd in [["scrot", screenshot_path], 
+                    ["gnome-screenshot", "-f", screenshot_path],
+                    ["import", "-window", "root", screenshot_path]]:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    break
+            except (FileNotFoundError, Exception):
+                continue
+        else:
+            return "Error: No screenshot tool found (install scrot, gnome-screenshot, or ImageMagick)"
+    
+    size_kb = os.path.getsize(screenshot_path) // 1024 if os.path.exists(screenshot_path) else 0
+    return f"Screenshot saved: {screenshot_path} ({size_kb}KB)"
+
+
 # Tool dispatch
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
@@ -1089,6 +1219,8 @@ TOOL_DISPATCH = {
     "git_commit": lambda args: tool_git_commit(args["message"]),
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
+    "view_image": lambda args: tool_view_image(args["path"]),
+    "screenshot": lambda args: tool_screenshot(args.get("filename")),
 }
 
 
@@ -1197,7 +1329,15 @@ TOOLS:
 - list_dir: List directory contents
 - git_status / git_diff / git_commit: Git operations
 - clipboard: Read/write system clipboard
+- view_image: Read image file as base64 for vision models (PNG, JPG, GIF, WebP)
+- screenshot: Take a screenshot and save to file
 - think: Reason step by step before acting
+
+VISION MODELS:
+- If the backend supports vision (check /v1/models for multimodal capability), you can use view_image to send images.
+- Use screenshot + view_image together to capture and analyze the screen.
+- For OpenAI API: images go in message content as {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+- If vision is not supported, gracefully inform the user.
 
 BOUDREAUX RULES:
 These are non-negotiable. They come from building real systems on real hardware.
@@ -1594,6 +1734,11 @@ def _agent_loop(round_limit: int):
                 print(f"  \033[33m[patch]\033[0m {args.get('path', '?')}")
             elif tool_name == "clipboard":
                 print(f"  \033[34m[clipboard]\033[0m {args.get('action', '?')}")
+            elif tool_name == "view_image":
+                print(f"  \033[34m[view_image]\033[0m {args.get('path', '?')}")
+            elif tool_name == "screenshot":
+                filename = args.get('filename', 'screenshot_AUTO.png')
+                print(f"  \033[34m[screenshot]\033[0m {filename}")
 
             # Execute
             handler = TOOL_DISPATCH.get(tool_name)
@@ -1957,6 +2102,16 @@ def handle_slash(cmd: str) -> bool:
             except Exception as e:
                 print(f"  Error: {e}")
 
+    elif command == "/screenshot":
+        # Take a screenshot
+        screenshot_file = arg if arg else None
+        result = tool_screenshot(screenshot_file)
+        print(f"  {result}")
+        
+        # Auto-offer to view with vision model
+        if "Screenshot saved:" in result:
+            print(f"  \033[90m[Tip] Use view_image tool to send this to a vision model]\033[0m")
+
     elif command == "/stats":
         # Show generation stats from last turn
         if not LAST_GENERATION_STATS:
@@ -2056,6 +2211,7 @@ def handle_slash(cmd: str) -> bool:
   /model <name>  Switch model mid-session
   /export [name] Export conversation as markdown
   /pipe <file>   Save last assistant response to file
+  /screenshot [file]  Take a screenshot (optional: specify filename)
   /stats         Show generation stats (tokens, time, tokens/sec)
   /remember <text>  Save a note to project memory (.trashclaw/memory.json)
   /undo          Undo last file write or edit
@@ -2091,6 +2247,8 @@ def handle_slash(cmd: str) -> bool:
   /undo rolls back file writes and edits.
   /pipe saves last response to a file.
   /stats shows generation speed (tokens/sec).
+  /screenshot captures the screen (Windows/macOS/Linux).
+  view_image tool sends images to vision models.
   .trashclaw.md in project root = custom instructions for agent.
 
   Just type naturally. TrashClaw will use tools autonomously.
