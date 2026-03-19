@@ -56,34 +56,65 @@ def _load_config(cwd: str = None) -> Dict:
         except Exception:
             pass
             
-    # 2. Project config from .trashclaw.toml in CWD
-    # We use a minimal TOML parser to keep zero external dependencies on Python < 3.11
+    # 2. Project config from .trashclaw.toml or .trashclaw.json in CWD
     target_cwd = cwd or os.getcwd()
-    project_config = os.path.join(target_cwd, ".trashclaw.toml")
-    if os.path.exists(project_config):
+
+    # Try .trashclaw.toml first (Python 3.11+ has tomllib, fallback to minimal parser)
+    toml_path = os.path.join(target_cwd, ".trashclaw.toml")
+    json_path = os.path.join(target_cwd, ".trashclaw.json")
+
+    if os.path.exists(toml_path):
         try:
-            with open(project_config, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"): continue
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip().strip('"').strip("'")
-                        # Basic type casting
-                        if v.lower() == "true": v = True
-                        elif v.lower() == "false": v = False
-                        elif v.isdigit(): v = int(v)
-                        cfg[k] = v
+            # Use stdlib tomllib on Python 3.11+
+            import tomllib
+            with open(toml_path, "rb") as f:
+                project_cfg = tomllib.load(f)
+            cfg.update(project_cfg)
+        except ImportError:
+            # Fallback: minimal TOML parser for Python < 3.11
+            try:
+                with open(toml_path, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip()
+                            # Parse TOML lists: ["a", "b", "c"]
+                            if v.startswith("[") and v.endswith("]"):
+                                items = v[1:-1].split(",")
+                                v = [i.strip().strip('"').strip("'") for i in items if i.strip()]
+                            else:
+                                v = v.strip('"').strip("'")
+                                if v.lower() == "true":
+                                    v = True
+                                elif v.lower() == "false":
+                                    v = False
+                                elif v.isdigit():
+                                    v = int(v)
+                            cfg[k] = v
+            except Exception:
+                pass
         except Exception:
             pass
-            
+    elif os.path.exists(json_path):
+        # JSON fallback for older Python or preference
+        try:
+            with open(json_path, "r") as f:
+                project_cfg = json.load(f)
+            if isinstance(project_cfg, dict):
+                cfg.update(project_cfg)
+        except Exception:
+            pass
+
     return cfg
 
 def _apply_config(cfg: Dict):
     """Apply config dict to global variables."""
     global LLAMA_URL, MODEL_NAME, MAX_TOOL_ROUNDS, MAX_CONTEXT_MESSAGES
-    global AUTO_COMPACT_THRESHOLD, APPROVE_SHELL
+    global AUTO_COMPACT_THRESHOLD, APPROVE_SHELL, EXTRA_SYSTEM_PROMPT
     
     def _c(key: str, env_key: str, default: Any) -> Any:
         val = os.environ.get(env_key, cfg.get(key, default))
@@ -94,11 +125,38 @@ def _apply_config(cfg: Dict):
 
     LLAMA_URL = _c("url", "TRASHCLAW_URL", "http://localhost:8080")
     MODEL_NAME = _c("model", "TRASHCLAW_MODEL", "local")
-    # print(f"DEBUG: Loaded model={MODEL_NAME} from config")
     MAX_TOOL_ROUNDS = _c("max_rounds", "TRASHCLAW_MAX_ROUNDS", 15)
     MAX_CONTEXT_MESSAGES = _c("max_context", "TRASHCLAW_MAX_CONTEXT", 80)
     AUTO_COMPACT_THRESHOLD = MAX_CONTEXT_MESSAGES + 20
     APPROVE_SHELL = _c("auto_shell", "TRASHCLAW_AUTO_SHELL", "0") != "1"
+
+    # Project-level system prompt override from .trashclaw.toml
+    if "system_prompt" in cfg and cfg["system_prompt"]:
+        EXTRA_SYSTEM_PROMPT = str(cfg["system_prompt"])
+
+
+def _load_context_files(cfg: Dict, cwd: str = None) -> str:
+    """Load context files specified in .trashclaw.toml config.
+
+    Reads ``context_files = ["src/main.py", "README.md"]`` from the project
+    config and returns their contents formatted for the system prompt.
+    """
+    context_files = cfg.get("context_files", [])
+    if not context_files or not isinstance(context_files, list):
+        return ""
+
+    target_cwd = cwd or os.getcwd()
+    parts = []
+    for rel_path in context_files:
+        abs_path = os.path.join(target_cwd, str(rel_path))
+        if os.path.exists(abs_path) and os.path.isfile(abs_path):
+            try:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read(8000)  # Cap at 8KB per file
+                parts.append(f"\n--- Context: {rel_path} ---\n{content}")
+            except Exception:
+                pass
+    return "".join(parts)
 
 # Initial load with default CWD
 _CFG = _load_config()
@@ -531,8 +589,18 @@ def _auto_compact():
 
 
 def _load_project_instructions() -> str:
-    """Load project-specific instructions from .trashclaw.md or CLAUDE.md in CWD."""
+    """Load project-specific instructions from .trashclaw.md or CLAUDE.md in CWD.
+
+    Also loads context_files from .trashclaw.toml/.trashclaw.json if specified.
+    """
     result = ""
+
+    # Load context_files from project config (context_files = ["file1", "file2"])
+    project_cfg = _load_config(CWD)
+    context = _load_context_files(project_cfg, CWD)
+    if context:
+        result += context
+
     for name in (".trashclaw.md", "TRASHCLAW.md", "CLAUDE.md"):
         path = os.path.join(CWD, name)
         if os.path.exists(path):
