@@ -1942,8 +1942,8 @@ def handle_slash(cmd: str) -> bool:
         # Save last assistant response to file
         global LAST_ASSISTANT_RESPONSE
         if not arg:
-            print("  Usage: /pipe <filename>")
-            print("  Saves the last assistant response to the specified file.")
+            # Auto-generate timestamp-based filename
+            arg = f"trashclaw-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
         elif not LAST_ASSISTANT_RESPONSE:
             print("  Error: No assistant response to save yet.")
         else:
