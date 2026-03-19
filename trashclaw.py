@@ -39,37 +39,74 @@ else:
     import readline
 
 # ── Config ──
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".trashclaw")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history")
 
-def _load_config() -> Dict:
-    """Load config from ~/.trashclaw/config.json, merged with env vars (env wins)."""
+def _load_config(cwd: str = None) -> Dict:
+    """Load config from ~/.trashclaw/config.json and .trashclaw.toml (cwd). Env wins."""
     cfg = {}
+    
+    # 1. Base config from home dir
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f:
                 cfg = json.load(f)
         except Exception:
             pass
+            
+    # 2. Project config from .trashclaw.toml in CWD
+    # We use a minimal TOML parser to keep zero external dependencies on Python < 3.11
+    target_cwd = cwd or os.getcwd()
+    project_config = os.path.join(target_cwd, ".trashclaw.toml")
+    if os.path.exists(project_config):
+        try:
+            with open(project_config, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"): continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        # Basic type casting
+                        if v.lower() == "true": v = True
+                        elif v.lower() == "false": v = False
+                        elif v.isdigit(): v = int(v)
+                        cfg[k] = v
+        except Exception:
+            pass
+            
     return cfg
 
+def _apply_config(cfg: Dict):
+    """Apply config dict to global variables."""
+    global LLAMA_URL, MODEL_NAME, MAX_TOOL_ROUNDS, MAX_CONTEXT_MESSAGES
+    global AUTO_COMPACT_THRESHOLD, APPROVE_SHELL
+    
+    def _c(key: str, env_key: str, default: Any) -> Any:
+        val = os.environ.get(env_key, cfg.get(key, default))
+        if isinstance(default, int) and not isinstance(val, int):
+            try: return int(val)
+            except: return default
+        return val
+
+    LLAMA_URL = _c("url", "TRASHCLAW_URL", "http://localhost:8080")
+    MODEL_NAME = _c("model", "TRASHCLAW_MODEL", "local")
+    # print(f"DEBUG: Loaded model={MODEL_NAME} from config")
+    MAX_TOOL_ROUNDS = _c("max_rounds", "TRASHCLAW_MAX_ROUNDS", 15)
+    MAX_CONTEXT_MESSAGES = _c("max_context", "TRASHCLAW_MAX_CONTEXT", 80)
+    AUTO_COMPACT_THRESHOLD = MAX_CONTEXT_MESSAGES + 20
+    APPROVE_SHELL = _c("auto_shell", "TRASHCLAW_AUTO_SHELL", "0") != "1"
+
+# Initial load with default CWD
 _CFG = _load_config()
+_apply_config(_CFG)
 
-def _c(key: str, env_key: str, default: str) -> str:
-    """Config lookup: env var > config file > default."""
-    return os.environ.get(env_key, _CFG.get(key, default))
-
-LLAMA_URL = _c("url", "TRASHCLAW_URL", "http://localhost:8080")
-MODEL_NAME = _c("model", "TRASHCLAW_MODEL", "local")
-MAX_TOOL_ROUNDS = int(_c("max_rounds", "TRASHCLAW_MAX_ROUNDS", "15"))
 MAX_OUTPUT_CHARS = 8000
-MAX_CONTEXT_MESSAGES = int(_c("max_context", "TRASHCLAW_MAX_CONTEXT", "80"))
-AUTO_COMPACT_THRESHOLD = MAX_CONTEXT_MESSAGES + 20
 LLM_RETRY_ATTEMPTS = 2
 LLM_RETRY_DELAY = 3
-APPROVE_SHELL = _c("auto_shell", "TRASHCLAW_AUTO_SHELL", "0") != "1"
 HISTORY: List[Dict] = []
 UNDO_STACK: List[Dict] = []  # [{path, content_before, action}]
 APPROVED_COMMANDS: set = set()
@@ -1493,11 +1530,23 @@ def _agent_loop(round_limit: int):
             HISTORY.append({"role": "assistant", "content": content})
             global LAST_ASSISTANT_RESPONSE
             LAST_ASSISTANT_RESPONSE = content
+            
+            # Show generation stats
+            stats = LAST_GENERATION_STATS
+            if stats:
+                tps = stats.get('tokens_per_sec', 0)
+                print(f"  \033[90m[{stats.get('tokens', 0)} tokens | {stats.get('seconds', 0):.2f}s | {tps:.1f} tps]\033[0m")
             return
 
         # Execute tool calls
         assistant_msg = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
         HISTORY.append(assistant_msg)
+
+        # Show generation stats
+        stats = LAST_GENERATION_STATS
+        if stats:
+            tps = stats.get('tokens_per_sec', 0)
+            print(f"  \033[90m[{stats.get('tokens', 0)} tokens | {stats.get('seconds', 0):.2f}s | {tps:.1f} tps]\033[0m")
 
         for tc in tool_calls:
             func = tc.get("function", {})
@@ -2131,8 +2180,12 @@ def main():
     while i < len(args):
         if args[i] == "--cwd" and i + 1 < len(args):
             CWD = os.path.abspath(args[i + 1]); i += 2
+            # Reload config from new CWD
+            _apply_config(_load_config(CWD))
         elif args[i].startswith("--cwd="):
             CWD = os.path.abspath(args[i].split("=", 1)[1]); i += 1
+            # Reload config from new CWD
+            _apply_config(_load_config(CWD))
         elif args[i] == "--url" and i + 1 < len(args):
             globals()["LLAMA_URL"] = args[i + 1]; i += 2
         elif args[i].startswith("--url="):
