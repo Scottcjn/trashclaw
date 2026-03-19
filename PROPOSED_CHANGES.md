@@ -1,0 +1,651 @@
+# Proposed Fix for #63
+
+```diff
+diff --git a/tests/test_trashclaw.py b/tests/test_trashclaw.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_trashclaw.py
+@@ -0,0 +1,420 @@
++"""
++Pytest test suite for TrashClaw core tool functions.
++No external dependencies beyond pytest.
++"""
++
++import os
++import sys
++import json
++import subprocess
++import pytest
++from unittest.mock import patch, MagicMock
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++import trashclaw
++
++
++# ── Fixtures ──
++
++@pytest.fixture(autouse=True)
++def isolate_globals(tmp_path):
++    """Isolate module-level globals between tests."""
++    saved = {
++        "CWD": trashclaw.CWD,
++        "UNDO_STACK": trashclaw.UNDO_STACK[:],
++        "ACHIEVEMENTS": json.loads(json.dumps(trashclaw.ACHIEVEMENTS)),
++        "APPROVE_SHELL": trashclaw.APPROVE_SHELL,
++        "APPROVED_COMMANDS": trashclaw.APPROVED_COMMANDS.copy(),
++    }
++    trashclaw.CWD = str(tmp_path)
++    trashclaw.UNDO_STACK.clear()
++    trashclaw.APPROVE_SHELL = False
++    trashclaw.APPROVED_COMMANDS.clear()
++
++    yield tmp_path
++
++    trashclaw.CWD = saved["CWD"]
++    trashclaw.UNDO_STACK[:] = saved["UNDO_STACK"]
++    trashclaw.ACHIEVEMENTS = saved["ACHIEVEMENTS"]
++    trashclaw.APPROVE_SHELL = saved["APPROVE_SHELL"]
++    trashclaw.APPROVED_COMMANDS = saved["APPROVED_COMMANDS"]
++
++
++@pytest.fixture
++def sample_file(tmp_path):
++    """Create a sample text file for testing."""
++    f = tmp_path / "sample.txt"
++    f.write_text("line one\nline two\nline three\nline four\nline five\n")
++    return f
++
++
++@pytest.fixture
++def git_repo(tmp_path):
++    """Create a temporary git repository with an initial commit."""
++    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
++    subprocess.run(
++        ["git", "config", "user.email", "test@test.com"],
++        cwd=str(tmp_path), capture_output=True,
++    )
++    subprocess.run(
++        ["git", "config", "user.name", "Test"],
++        cwd=str(tmp_path), capture_output=True,
++    )
++    (tmp_path / "README.md").write_text("# Test\n")
++    subprocess.run(["git", "add", "-A"], cwd=str(tmp_path), capture_output=True)
++    subprocess.run(
++        ["git", "commit", "-m", "initial"],
++        cwd=str(tmp_path), capture_output=True,
++    )
++    trashclaw.CWD = str(tmp_path)
++    return tmp_path
++
++
++# ── Config Tests ──
++
++class TestConfig:
++    def test_load_config_missing_file(self, tmp_path):
++        with patch.object(trashclaw, "CONFIG_FILE", str(tmp_path / "nope.json")):
++            assert trashclaw._load_config() == {}
++
++    def test_load_config_valid_file(self, tmp_path):
++        cfg_file = tmp_path / "config.json"
++        cfg_file.write_text(json.dumps({"url": "http://example.com", "model": "m"}))
++        with patch.object(trashclaw, "CONFIG_FILE", str(cfg_file)):
++            cfg = trashclaw._load_config()
++            assert cfg["url"] == "http://example.com"
++            assert cfg["model"] == "m"
++
++    def test_load_config_invalid_json(self, tmp_path):
++        cfg_file = tmp_path / "config.json"
++        cfg_file.write_text("{{{bad json")
++        with patch.object(trashclaw, "CONFIG_FILE", str(cfg_file)):
++            assert trashclaw._load_config() == {}
++
++    def test_c_returns_default(self):
++        with patch.object(trashclaw, "_CFG", {}):
++            os.environ.pop("_TC_TEST_KEY_", None)
++            assert trashclaw._c("nope", "_TC_TEST_KEY_", "fallback") == "fallback"
++
++    def test_c_config_overrides_default(self):
++        with patch.object(trashclaw, "_CFG", {"k": "from_cfg"}):
++            os.environ.pop("_TC_TEST_KEY_", None)
++            assert trashclaw._c("k", "_TC_TEST_KEY_", "default") == "from_cfg"
++
++    def test_c_env_overrides_config(self):
++        with patch.object(trashclaw, "_CFG", {"k": "from_cfg"}):
++            with patch.dict(os.environ, {"_TC_TEST_KEY_": "from_env"}):
++                assert trashclaw._c("k", "_TC_TEST_KEY_", "default") == "from_env"
++
++
++# ── Path Resolution ──
++
++class TestResolvePath:
++    def test_absolute_path_unchanged(self, tmp_path):
++        assert trashclaw._resolve_path("/absolute/path") == os.path.normpath("/absolute/path")
++
++    def test_relative_path_joined_to_cwd(self, tmp_path):
++        result = trashclaw._resolve_path("rel/file.txt")
++        assert result == os.path.normpath(os.path.join(str(tmp_path), "rel/file.txt"))
++
++    def test_home_expansion(self, tmp_path):
++        result = trashclaw._resolve_path("~/somefile")
++        assert os.path.expanduser("~") in result
++
++
++# ── read_file ──
++
++class TestReadFile:
++    def test_read_full_file(self, sample_file):
++        result = trashclaw.tool_read_file(str(sample_file))
++        assert "line one" in result
++        assert "line five" in result
++
++    def test_read_shows_line_numbers(self, sample_file):
++        result = trashclaw.tool_read_file(str(sample_file))
++        assert "1\t" in result
++
++    def test_read_with_offset(self, sample_file):
++        result = trashclaw.tool_read_file(str(sample_file), offset=3)
++        assert "line three" in result
++        assert "line one" not in result
++
++    def test_read_with_limit(self, sample_file):
++        result = trashclaw.tool_read_file(str(sample_file), limit=2)
++        assert "line one" in result
++        assert "line two" in result
++        assert "line three" not in result
++
++    def test_read_with_offset_and_limit(self, sample_file):
++        result = trashclaw.tool_read_file(str(sample_file), offset=2, limit=2)
++        assert "line two" in result
++        assert "line three" in result
++        assert "line one" not in result
++        assert "line four" not in result
++
++    def test_read_nonexistent(self, tmp_path):
++        result = trashclaw.tool_read_file(str(tmp_path / "nope.txt"))
++        assert "Error" in result
++        assert "not found" in result.lower()
++
++    @pytest.mark.skipif(
++        sys.platform == "win32" or (hasattr(os, "getuid") and os.getuid() == 0),
++        reason="Permission test unreliable on Windows or as root",
++    )
++    def test_read_permission_denied(self, tmp_path):
++        f = tmp_path / "noperm.txt"
++        f.write_text("secret")
++        f.chmod(0o000)
++        result = trashclaw.tool_read_file(str(f))
++        assert "Error" in result
++        f.chmod(0o644)
++
++
++# ── write_file ──
++
++class TestWriteFile:
++    def test_write_new_file(self, tmp_path):
++        target = str(tmp_path / "new.txt")
++        result = trashclaw.tool_write_file(target, "hello\n")
++        assert "Wrote" in result
++        with open(target) as f:
++            assert f.read() == "hello\n"
++
++    def test_write_creates_directories(self, tmp_path):
++        target = str(tmp_path / "a" / "b" / "deep.txt")
++        result = trashclaw.tool_write_file(target, "nested\n")
++        assert "Wrote" in result
++        assert os.path.exists(target)
++
++    def test_write_overwrites(self, sample_file):
++        trashclaw.tool_write_file(str(sample_file), "replaced\n")
++        assert sample_file.read_text() == "replaced\n"
++
++    def test_write_saves_undo(self, sample_file):
++        trashclaw.tool_write_file(str(sample_file), "new\n")
++        assert len(trashclaw.UNDO_STACK) == 1
++        assert trashclaw.UNDO_STACK[0]["action"] == "write"
++        assert "line one" in trashclaw.UNDO_STACK[0]["content"]
++
++
++# ── edit_file ──
++
++class TestEditFile:
++    def test_edit_success(self, sample_file):
++        result = trashclaw.tool_edit_file(str(sample_file), "line two", "line TWO")
++        assert "Edited" in result
++        assert "line TWO" in sample_file.read_text()
++
++    def test_edit_not_found(self, sample_file):
++        result = trashclaw.tool_edit_file(str(sample_file), "nonexistent", "x")
++        assert "Error" in result
++        assert "not found" in result
++
++    def test_edit_multiple_matches(self, tmp_path):
++        f = tmp_path / "dup.txt"
++        f.write_text("foo\nfoo\nbar\n")
++        result = trashclaw.tool_edit_file(str(f), "foo", "baz")
++        assert "Error" in result
++        assert "2 times" in result
++
++    def test_edit_nonexistent_file(self, tmp_path):
++        result = trashclaw.tool_edit_file(str(tmp_path / "nope.txt"), "a", "b")
++        assert "Error" in result
++
++    def test_edit_saves_undo(self, sample_file):
++        trashclaw.tool_edit_file(str(sample_file), "line two", "LINE TWO")
++        assert len(trashclaw.UNDO_STACK) == 1
++        assert trashclaw.UNDO_STACK[0]["action"] == "edit"
++
++
++# ── run_command ──
++
++class TestRunCommand:
++    def test_echo(self, tmp_path):
++        assert "hello" in trashclaw.tool_run_command("echo hello")
++
++    def test_nonzero_exit_code(self, tmp_path):
++        result = trashclaw.tool_run_command("exit 1")
++        assert "exit code 1" in result
++
++    def test_timeout(self, tmp_path):
++        result = trashclaw.tool_run_command("sleep 10", timeout=1)
++        assert "timed out" in result.lower() or "Timeout" in result
++
++    def test_cd_command(self, tmp_path):
++        sub = tmp_path / "sub"
++        sub.mkdir()
++        result = trashclaw.tool_run_command(f"cd {sub}")
++        assert "Changed directory" in result
++        assert trashclaw.CWD == str(sub)
++
++    def test_cd_nonexistent(self, tmp_path):
++        result = trashclaw.tool_run_command("cd /nonexistent_dir_xyz_123")
++        assert "Error" in result
++
++    def test_stderr_captured(self, tmp_path):
++        result = trashclaw.tool_run_command("echo err >&2")
++        assert "err" in result
++
++    def test_approve_shell_prompt_deny(self, tmp_path):
++        trashclaw.APPROVE_SHELL = True
++        with patch("builtins.input", return_value="n"):
++            result = trashclaw.tool_run_command("echo nope")
++            assert "cancelled" in result.lower()
++
++    def test_approve_shell_prompt_allow(self, tmp_path):
++        trashclaw.APPROVE_SHELL = True
++        with patch("builtins.input", return_value="y"):
++            result = trashclaw.tool_run_command("echo yes")
++            assert "yes" in result
++
++
++# ── search_files ──
++
++class TestSearchFiles:
++    def test_finds_match(self, tmp_path):
++        (tmp_path / "test.py").write_text("def hello():\n    return 42\n")
++        result = trashclaw.tool_search_files("hello", str(tmp_path))
++        assert "test.py" in result
++
++    def test_no_match(self, tmp_path):
++        (tmp_path / "test.py").write_text("nothing\n")
++        result = trashclaw.tool_search_files("zzzzz", str(tmp_path))
++        assert "No matches" in result
++
++    def test_glob_filter(self, tmp_path):
++        (tmp_path / "code.py").write_text("match\n")
++        (tmp_path / "notes.txt").write_text("match\n")
++        result = trashclaw.tool_search_files("match", str(tmp_path), glob_filter="*.py")
++        assert "code.py" in result
++        assert "notes.txt" not in result
++
++    def test_invalid_regex(self, tmp_path):
++        result = trashclaw.tool_search_files("[invalid", str(tmp_path))
++        assert "Error" in result or "Invalid regex" in result
++
++    def test_default_path(self, tmp_path):
++        (tmp_path / "file.txt").write_text("findme\n")
++        result = trashclaw.tool_search_files("findme")
++        assert "file.txt" in result
++
++
++# ── find_files ──
++
++class TestFindFiles:
++    def test_glob_match(self, tmp_path):
++        (tmp_path / "a.py").write_text("")
++        (tmp_path / "b.py").write_text("")
++        (tmp_path / "c.txt").write_text("")
++        result = trashclaw.tool_find_files("*.py", str(tmp_path))
++        assert "a.py" in result
++        assert "b.py" in result
++        assert "c.txt" not in result
++
++    def test_recursive_glob(self, tmp_path):
++        sub = tmp_path / "sub"
++        sub.mkdir()
++        (sub / "deep.py").write_text("")
++        result = trashclaw.tool_find_files("**/*.py", str(tmp_path))
++        assert "deep.py" in result
++
++    def test_no_matches(self, tmp_path):
++        result = trashclaw.tool_find_files("*.xyz", str(tmp_path))
++        assert "No files" in result
++
++
++# ── list_dir ──
++
++class TestListDir:
++    def test_lists_contents(self, tmp_path):
++        (tmp_path / "file.txt").write_text("hello")
++        (tmp_path / "subdir").mkdir()
++        result = trashclaw.tool_list_dir(str(tmp_path))
++        assert "file.txt" in result
++        assert "subdir" in result
++
++    def test_empty_directory(self, tmp_path):
++        empty = tmp_path / "empty"
++        empty.mkdir()
++        result = trashclaw.tool_list_dir(str(empty))
++        assert "(empty)" in result
++
++    def test_not_a_directory(self, sample_file):
++        result = trashclaw.tool_list_dir(str(sample_file))
++        assert "Error" in result
++
++    def test_default_path(self, tmp_path):
++        (tmp_path / "visible.txt").write_text("")
++        result = trashclaw.tool_list_dir()
++        assert "visible.txt" in result
++
++    def test_hides_dotfiles(self, tmp_path):
++        (tmp_path / ".hidden").write_text("")
++        (tmp_path / "visible").write_text("")
++        result = trashclaw.tool_list_dir(str(tmp_path))
++        assert ".hidden" not in result
++        assert "visible" in result
++
++
++# ── git_status ──
++
++class TestGitStatus:
++    def test_clean_repo(self, git_repo):
++        result = trashclaw.tool_git_status()
++        assert "main" in result or "master" in result
++
++    def test_with_untracked_file(self, git_repo):
++        (git_repo / "new.txt").write_text("new\n")
++        result = trashclaw.tool_git_status()
++        assert "new.txt" in result
++
++
++# ── git_diff ──
++
++class TestGitDiff:
++    def test_no_changes(self, git_repo):
++        result = trashclaw.tool_git_diff()
++        assert "No changes" in result
++
++    def test_unstaged_changes(self, git_repo):
++        (git_repo / "README.md").write_text("# Test\nmodified\n")
++        result = trashclaw.tool_git_diff()
++        assert "modified" in result
++
++    def test_staged_changes(self, git_repo):
++        (git_repo / "README.md").write_text("# Test\nstaged\n")
++        subprocess.run(["git", "add", "-A"], cwd=str(git_repo), capture_output=True)
++        result = trashclaw.tool_git_diff(staged=True)
++        assert "staged" in result
++
++
++# ── git_commit ──
++
++class TestGitCommit:
++    def test_commit_success(self, git_repo):
++        (git_repo / "new.txt").write_text("new\n")
++        result = trashclaw.tool_git_commit("test commit")
++        assert "test commit" in result
++
++    def test_nothing_to_commit(self, git_repo):
++        result = trashclaw.tool_git_commit("empty")
++        assert "nothing to commit" in result.lower() or "Nothing to commit" in result
++
++
++# ── patch_file ──
++
++class TestPatchFile:
++    def test_add_line(self, sample_file):
++        patch = "@@ -2,1 +2,2 @@\n-line two\n+line two\n+inserted line"
++        result = trashclaw.tool_patch_file(str(sample_file), patch)
++        assert "Patched" in result
++        assert "inserted line" in sample_file.read_text()
++
++    def test_remove_line(self, sample_file):
++        patch = "@@ -2,1 +2,0 @@\n-line two"
++        result = trashclaw.tool_patch_file(str(sample_file), patch)
++        assert "Patched" in result
++        assert "line two" not in sample_file.read_text()
++
++    def test_replace_line(self, sample_file):
++        patch = "@@ -1,1 +1,1 @@\n-line one\n+LINE ONE"
++        result = trashclaw.tool_patch_file(str(sample_file), patch)
++        assert "Patched" in result
++        assert "LINE ONE" in sample_file.read_text()
++
++    def test_patch_saves_undo(self, sample_file):
++        patch = "@@ -1,1 +1,1 @@\n-line one\n+LINE ONE"
++        trashclaw.tool_patch_file(str(sample_file), patch)
++        assert len(trashclaw.UNDO_STACK) == 1
++        assert trashclaw.UNDO_STACK[0]["action"] == "patch"
++
++    def test_patch_nonexistent_file(self, tmp_path):
++        target = str(tmp_path / "brand_new.txt")
++        patch = "@@ -0,0 +1,1 @@\n+hello"
++        result = trashclaw.tool_patch_file(target, patch)
++        assert "Patched" in result
++        assert os.path.exists(target)
++
++
++# ── clipboard ──
++
++class TestClipboard:
++    def test_paste(self, tmp_path):
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(returncode=0, stdout="pasted text", stderr="")
++            result = trashclaw.tool_clipboard("paste")
++            assert "pasted text" in result
++
++    def test_copy(self, tmp_path):
++        with patch("subprocess.run") as mock_run:
++            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
++            result = trashclaw.tool_clipboard("copy", "test content")
++            assert "Copied" in result
++
++    def test_copy_empty_content(self, tmp_path):
++        result = trashclaw.tool_clipboard("copy", "")
++        assert "Error" in result
++
++    def test_invalid_action(self, tmp_path):
++        result = trashclaw.tool_clipboard("invalid")
++        assert "Error" in result or "Unknown" in result
++
++
++# ── Achievement Tracking ──
++
++def _fresh_stats():
++    return {
++        "files_read": 0, "files_written": 0, "edits": 0,
++        "commands_run": 0, "commits": 0, "sessions": 0,
++        "tools_used": 0, "total_turns": 0,
++    }
++
++
++class TestAchievements:
++    def test_track_read_file(self, tmp_path):
++        with patch.object(trashclaw, "ACHIEVEMENTS", {"unlocked": [], "stats": _fresh_stats()}):
++            with patch.object(trashclaw, "_save_achievements"):
++                trashclaw._track_tool("read_file")
++                assert trashclaw.ACHIEVEMENTS["stats"]["files_read"] == 1
++                assert trashclaw.ACHIEVEMENTS["stats"]["tools_used"] == 1
++
++    def test_track_write_file(self, tmp_path):
++        with patch.object(trashclaw, "ACHIEVEMENTS", {"unlocked": [], "stats": _fresh_stats()}):
++            with patch.object(trashclaw, "_save_achievements"):
++                trashclaw._track_tool("write_file")
++                assert trashclaw.ACHIEVEMENTS["stats"]["files_written"] == 1
++
++    def test_track_edit_file(self, tmp_path):
++        with patch.object(trashclaw, "ACHIEVEMENTS", {"unlocked": [], "stats": _fresh_stats()}):
++            with patch.object(trashclaw, "_save_achievements"):
++                trashclaw._track_tool("edit_file")
++                assert trashclaw.ACHIEVEMENTS["stats"]["edits"] == 1
++
++    def test_track_run_command(self, tmp_path):
++        with patch.object(trashclaw, "ACHIEVEMENTS", {"unlocked": [], "stats": _fresh_stats()}):
++            with patch.object(trashclaw, "_save_achievements"):
++                trashclaw._track_tool("run_command")
++                assert trashclaw.ACHIEVEMENTS["stats"]["commands_run"] == 1
++
++    def test_track_git_commit(self, tmp_path):
++        with patch.object(trashclaw, "ACHIEVEMENTS", {"unlocked": [], "stats": _fresh_stats()}):
++            with patch.object(trashclaw, "_save_achievements"):
++                trashclaw._track_tool("git_commit")
++                assert trashclaw.ACHIEVEMENTS["stats"]["commits"] == 1
++
++    def test_achievement_unlocks_first_blood(self, tmp_path):
++        with patch.object(trashclaw, "ACHIEVEMENTS", {"unlocked": [], "stats": _fresh_stats()}):
++            with patch.object(trashclaw, "_save_achievements"):
++                trashclaw._track_tool("edit_file")
++                assert "first_blood" in trashclaw.ACHIEVEMENTS["unlocked"]
++
++    def test_tools_used_increments_for_any_tool(self, tmp_path):
++        with patch.object(trashclaw, "ACHIEVEMENTS", {"unlocked": [], "stats": _fresh_stats()}):
++            with patch.object(trashclaw, "_save_achievements"):
++                trashclaw._track_tool("think")
++                assert trashclaw.ACHIEVEMENTS["stats"]["tools_used"] == 1
++                trashclaw._track_tool("think")
++                assert trashclaw.ACHIEVEMENTS["stats"]["tools_used"] == 2
++
++
++# ── Undo System ──
++
++class TestUndoSystem:
++    def test_saves_existing_file_content(self, sample_file):
++        trashclaw._save_undo(str(sample_file), "test_action")
++        assert len(trashclaw.UNDO_STACK) == 1
++        entry = trashclaw.UNDO_STACK[0]
++        assert entry["path"] == str(sample_file)
++        assert entry["action"] == "test_action"
++        assert "line one" in entry["content"]
++
++    def test_saves_none_for_nonexistent(self, tmp_path):
++        trashclaw._save_undo(str(tmp_path / "nope.txt"), "create")
++        assert len(trashclaw.UNDO_STACK) == 1
++        assert trashclaw.UNDO_STACK[0]["content"] is None
++
++    def test_stack_bounded_at_50(self, tmp_path):
++        f = tmp_path / "test.txt"
++        f.write_text("x")
++        for i in range(60):
++            trashclaw._save_undo(str(f), f"action_{i}")
++        assert len(trashclaw.UNDO_STACK) <= 50
++
++
++# ── Tab Completion ──
++
++class TestTabCompletion:
++    def test_setup_runs_without_error(self, tmp_path):
++        trashclaw._setup_tab_completion()
++
++    def test_completer_matches_slash_commands(self, tmp_path):
++        trashclaw._setup_tab_completion()
++        if hasattr(trashclaw.readline, "get_completer"):
++            completer = trashclaw.readline.get_completer()
++            if completer is not None:
++                assert completer("/he", 0) == "/help"
++                assert completer("/ex", 0) == "/exit"
++                assert completer("/ex", 1) == "/export"
++                assert completer("/zzz", 0) is None
++
++    def test_slash_commands_list_populated(self):
++        assert len(trashclaw.SLASH_COMMANDS) > 0
++        assert "/help" in trashclaw.SLASH_COMMANDS
++        assert "/exit" in trashclaw.SLASH_COMMANDS
++        assert "/quit" in trashclaw.SLASH_COMMANDS
++
++
++# ── Think Tool ──
++
++class TestThink:
++    def test_returns_no_side_effects(self, tmp_path):
++        result = trashclaw.tool_think("test thought")
++        assert "no side effects" in result.lower()
++
++
++# ── Tool Dispatch Table ──
++
++class TestToolDispatch:
++    def test_all_tools_have_dispatch(self):
++        for tool in trashclaw.TOOLS:
++            name = tool["function"]["name"]
++            assert name in trashclaw.TOOL_DISPATCH, f"{name} missing from TOOL_DISPATCH"
++
++    def test_tool_names_set_complete(self):
++        expected = {t["function"]["name"] for t in trashclaw.TOOLS}
++        for name in expected:
++            assert name in trashclaw.TOOL_NAMES
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+new file mode 100644
+--- /dev/null
++++ b/.github/workflows/tests.yml
+@@ -0,0 +1,28 @@
++name: Tests
++
++on:
++  push:
++    branches: [main]
++  pull_request:
++    branches: [main]
++
++jobs:
++  test:
++    runs-on: ubuntu-latest
++    strategy:
++      matrix:
++        python-version: ["3.8", "3.10", "3.12"]
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Set up Python ${{ matrix.python-version }}
++        uses: actions/setup-python@v5
++        with:
++          python-version: ${{ matrix.python-version }}
++
++      - name: Install pytest
++        run: pip install pytest
++
++      - name: Run tests
++        run: pytest tests/ -v
+```
+
+**What was added and why:**
+
+**`tests/test_trashclaw.py`** — 420-line test suite organized into 15 test classes covering every requirement:
+
+- **TestConfig** (6 tests): Validates `_load_config` with missing/valid/malformed config files, and `_c` priority chain (env > config > default).
+- **TestResolvePath** (3 tests): Absolute, relative, and `~` expansion.
+- **TestReadFile** (7 tests): Full reads, offset/limit slicing, line numbers, missing files, permission errors.
+- **TestWriteFile** (4 tests): New files, nested directory creation, overwrite, undo capture.
+- **TestEditFile** (5 tests): Successful replace, not-found, duplicate matches, missing file, undo capture.
+- **TestRunCommand** (8 tests): Echo, exit codes, timeout, `cd` handling, stderr, and the interactive approval prompt (mocked both allow and deny).
+- **TestSearchFiles** (5 tests): Regex match, no match, glob filtering, invalid regex, default path.
+- **TestFindFiles** (3 tests): Glob match, recursive `**` patterns, no matches.
+- **TestListDir** (5 tests): Contents listing, empty dir, non-directory error, default path, dotfile hiding.
+- **TestGitStatus/Diff/Commit** (7 tests): All tested against a real temporary git repo created by the `git_repo` fixture.
+- **TestPatchFile** (5 tests): Add/remove/replace lines, undo capture, patching a nonexistent file.
+- **TestClipboard** (4 tests): Paste and copy (subprocess mocked), empty content, invalid action.
+- **TestAchievements** (7 tests): Per-tool stat increments and achievement unlock trigger.
+- **TestUndoSystem** (3 tests): Existing file capture, nonexistent file (None content), 50-entry stack bound.
+- **TestTabCompletion** (3 tests): Setup without error, completer returns correct slash commands, SLASH_COMMANDS populated.
+
+The `autouse` fixture `isolate_globals` swaps `CWD`, `UNDO_STACK`, `ACHIEVEMENTS`, `APPROVE_SHELL`, and `APPROVED_COMMANDS` to clean values before each test and restores them after, preventing cross-test contamination. All file I/O uses pytest's `tmp_path`.
+
+**`.github/workflows/tests.yml`** — Runs the suite on push/PR against Python 3.8, 3.10, and 3.12 with only `pytest` as a dependency.
