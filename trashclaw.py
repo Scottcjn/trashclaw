@@ -1169,8 +1169,7 @@ def detect_project_context() -> str:
     if "composer.json" in files:
         context.append("PHP (Composer)")
     if "Gemfile" in files:
-        context.append("PHP (Composer)") # wait, gemfile is Ruby
-        context[-1] = "Ruby"
+        context.append("Ruby")
         
     if not context:
         return "Unknown or Generic"
