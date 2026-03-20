@@ -8,7 +8,7 @@
 
 A general-purpose local agent that runs on anything — from a 2013 Mac Pro trashcan to a PowerBook G4 to an IBM POWER8 mainframe. No cloud, no API keys, no dependencies beyond Python 3.7 and any local LLM server.
 
-**14 tools. 17 commands. Plugin system. Achievements. Zero dependencies.**
+**14 tools. 21 commands. Plugin system. Achievements. Zero dependencies.**
 
 ## What it does
 
@@ -66,22 +66,27 @@ No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 | `clipboard` | Copy/paste from system clipboard |
 | `think` | Reason through problems before acting |
 
-## Commands (17)
+## Commands (21)
 
 | Command | Description |
 |---------|-------------|
+| `/add <files>` | Pre-load files into conversation context |
 | `/cd <dir>` | Change working directory |
 | `/clear` | Clear conversation context |
 | `/compact` | Keep only last 10 messages |
-| `/status` | Server, model, context, git branch, stats |
-| `/save <name>` | Save conversation to session file |
-| `/load <name>` | Load conversation from session |
-| `/sessions` | List saved sessions |
-| `/model <name>` | Switch model mid-session |
-| `/export [name]` | Export conversation as markdown |
-| `/undo` | Undo last file write or edit |
 | `/config [key val]` | Show or set persistent config |
+| `/diff` | Show all file changes made this session |
+| `/export [name]` | Export conversation as markdown |
+| `/load <name>` | Load conversation from session |
+| `/model <name>` | Switch model mid-session |
+| `/pipe [file]` | Save last assistant response to a file |
 | `/plugins` | Show loaded plugins |
+| `/remember <text>` | Save a note to project memory |
+| `/save <name>` | Save conversation to session file |
+| `/sessions` | List saved sessions |
+| `/stats` | Show generation stats (tokens, time, tok/s) |
+| `/status` | Server, model, context, git branch, stats |
+| `/undo` | Undo last file write or edit |
 | `/achievements` | Show your progress and stats |
 | `/about` | The manifesto |
 | `/help` | Full command reference |

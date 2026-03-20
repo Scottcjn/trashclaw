@@ -41,8 +41,11 @@ TRASHCLAW_URL=http://localhost:11434 python3 trashclaw.py
 ```
 trashclaw/
 ├── trashclaw.py           # Main agent (single file, zero dependencies)
+├── tests/                 # pytest test suite
 ├── plugins/               # Plugin extensions
-├── docs/                  # Documentation
+├── docs/                  # Documentation (model compatibility, etc.)
+├── CONTRIBUTING.md        # This file
+├── CONTRIBUTORS.md        # Hall of fame
 ├── LICENSE                # MIT License
 └── README.md              # Project overview
 ```
