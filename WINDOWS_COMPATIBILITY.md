@@ -7,7 +7,7 @@
 
 ## Summary
 
-TrashClaw v0.2 runs successfully on Windows with the following compatibility status:
+TrashClaw v0.7.1 runs successfully on Windows with the following compatibility status:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
