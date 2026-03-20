@@ -84,6 +84,7 @@ trashclaw/
 
 - Open an issue for bugs or feature requests
 - Check existing issues before creating new ones
+- Join the community discussions in the Elyan Labs ecosystem
 
 ## License
 

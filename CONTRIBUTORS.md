@@ -15,3 +15,7 @@ Thank you to all the amazing people who have contributed to TrashClaw!
 | Zby-coding | [@Zby-coding](https://github.com/Zby-coding) | CONTRIBUTORS.md |
 
 This project follows the [all-contributors](https://allcontributors.org) specification.
+
+## Contributing
+
+Want to join this list? Check out [CONTRIBUTING.md](CONTRIBUTING.md) to get started!
