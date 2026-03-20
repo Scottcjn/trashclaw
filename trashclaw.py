@@ -1442,6 +1442,9 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
         "tokens_per_sec": tokens_per_sec
     }
     
+    # Display generation stats to user
+    print(f"\n\033[90m[Generated {token_count} tokens in {elapsed:.2f}s → {tokens_per_sec:.2f} tokens/sec]\033[0m")
+    
     return {
         "choices": [{
             "message": {
