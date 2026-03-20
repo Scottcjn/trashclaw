@@ -8,7 +8,7 @@
 
 A general-purpose local agent that runs on anything — from a 2013 Mac Pro trashcan to a PowerBook G4 to an IBM POWER8 mainframe. No cloud, no API keys, no dependencies beyond Python 3.7 and any local LLM server.
 
-**14 tools. 17 commands. Plugin system. Achievements. Zero dependencies.**
+**15 tools. 18 commands. Plugin system. Achievements. Zero dependencies.**
 
 ## What it does
 
@@ -47,7 +47,7 @@ TRASHCLAW_URL=http://your-server:8080 python3 trashclaw.py
 
 No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 
-## Tools (14 built-in + unlimited plugins)
+## Tools (15 built-in + unlimited plugins)
 
 | Tool | Description |
 |------|-------------|
@@ -64,9 +64,10 @@ No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 | `git_diff` | Show unstaged or staged changes |
 | `git_commit` | Stage all changes and commit |
 | `clipboard` | Copy/paste from system clipboard |
+| `view_image` | Send images to vision-capable models |
 | `think` | Reason through problems before acting |
 
-## Commands (17)
+## Commands (19)
 
 | Command | Description |
 |---------|-------------|
@@ -83,6 +84,8 @@ No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 | `/config [key val]` | Show or set persistent config |
 | `/plugins` | Show loaded plugins |
 | `/achievements` | Show your progress and stats |
+| `/screenshot` | Capture screen and send to vision model |
+| `/stats` | Generation speed stats (tokens/sec) |
 | `/about` | The manifesto |
 | `/help` | Full command reference |
 | `/exit` | Quit |
