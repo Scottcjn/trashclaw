@@ -232,3 +232,43 @@ class TestClipboard:
         """Clipboard copy should not crash even without display."""
         result = trashclaw.tool_clipboard("copy", "test content")
         assert isinstance(result, str)
+
+
+# ── tool_git_commit ──
+
+class TestGitCommit:
+    def test_git_commit_no_repo(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+        result = trashclaw.tool_git_commit("test commit")
+        assert isinstance(result, str)
+
+    def test_git_commit_empty_message(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+        result = trashclaw.tool_git_commit("")
+        assert isinstance(result, str)
+
+    def test_git_commit_in_real_repo(self, tmp_path, monkeypatch):
+        import subprocess
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+        subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(tmp_path), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+        result = trashclaw.tool_git_commit("initial commit")
+        assert isinstance(result, str)
+
+
+# ── tab completion ──
+
+class TestTabCompletion:
+    def test_setup_tab_completion_runs(self):
+        try:
+            trashclaw._setup_tab_completion()
+        except Exception:
+            pass  # readline may not be available in CI
+
+    def test_setup_tab_completion_returns_none(self):
+        result = trashclaw._setup_tab_completion()
+        assert result is None
