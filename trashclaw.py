@@ -458,6 +458,20 @@ TOOLS = [
                 "required": ["action"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_image",
+            "description": "View an image file and include it in the conversation for vision analysis. Supports PNG, JPEG, GIF, WebP. Requires a vision-capable model.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the image file to view"}
+                },
+                "required": ["path"]
+            }
+        }
     }
 ]
 
@@ -561,7 +575,7 @@ def _load_project_instructions() -> str:
 
 SLASH_COMMANDS = ["/about", "/achievements", "/add", "/cd", "/clear", "/compact",
                   "/config", "/diff", "/exit", "/export", "/help", "/load", "/model",
-                  "/pipe", "/plugins", "/quit", "/remember", "/save", "/sessions", "/status", "/undo"]
+                  "/pipe", "/plugins", "/quit", "/remember", "/save", "/screenshot", "/sessions", "/status", "/undo"]
 
 
 def _setup_tab_completion():
@@ -1073,6 +1087,105 @@ def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
 
+# ── Vision Support ──
+
+# Track pending images to include in next LLM request
+PENDING_IMAGES: List[Dict] = []  # [{"path": str, "base64": str, "mime": str}]
+VISION_SUPPORTED: bool = False  # Auto-detected on first use
+
+_IMAGE_EXTENSIONS = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _detect_vision_support() -> bool:
+    """Check if the current model supports vision by querying /v1/models."""
+    global VISION_SUPPORTED
+    try:
+        req = urllib.request.Request(f"{LLAMA_URL}/v1/models")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = data.get("data", [])
+            for m in models:
+                model_id = m.get("id", "").lower()
+                # Vision-capable model indicators
+                if any(kw in model_id for kw in ("llava", "vision", "qwen-vl", "gpt-4", "claude", "gemini", "multimodal")):
+                    VISION_SUPPORTED = True
+                    return True
+                # Check capabilities if provided
+                caps = m.get("capabilities", {})
+                if caps.get("vision") or caps.get("multimodal"):
+                    VISION_SUPPORTED = True
+                    return True
+    except Exception:
+        pass
+    # Default to True for API providers (OpenAI, Anthropic, etc.) that don't list models
+    if any(kw in LLAMA_URL.lower() for kw in ("openai", "anthropic", "api.")):
+        VISION_SUPPORTED = True
+        return True
+    return False
+
+
+def tool_view_image(path: str) -> str:
+    """Read an image file and queue it for inclusion in the next LLM request."""
+    import base64
+    
+    path = _resolve_path(path)
+    if not os.path.exists(path):
+        return f"Error: Image not found: {path}"
+    
+    ext = os.path.splitext(path)[1].lower()
+    mime = _IMAGE_EXTENSIONS.get(ext)
+    if not mime:
+        return f"Error: Unsupported image format '{ext}'. Supported: {', '.join(_IMAGE_EXTENSIONS.keys())}"
+    
+    # Check file size (limit to 10MB)
+    size = os.path.getsize(path)
+    if size > 10 * 1024 * 1024:
+        return f"Error: Image too large ({size / 1024 / 1024:.1f}MB). Maximum: 10MB"
+    
+    try:
+        with open(path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        return f"Error reading image: {e}"
+    
+    PENDING_IMAGES.append({
+        "path": path,
+        "base64": img_data,
+        "mime": mime,
+    })
+    
+    return f"Image loaded: {os.path.basename(path)} ({size / 1024:.1f}KB, {mime}). It will be included in the next message to the model."
+
+
+def _take_screenshot() -> str:
+    """Take a screenshot using system tools and return the path."""
+    import tempfile
+    screenshot_path = os.path.join(tempfile.gettempdir(), f"trashclaw_screenshot_{int(time.time())}.png")
+    
+    # Try platform-specific screenshot tools
+    for cmd in [
+        ["scrot", screenshot_path],                          # Linux (X11)
+        ["gnome-screenshot", "-f", screenshot_path],         # GNOME
+        ["maim", screenshot_path],                           # Linux (X11)
+        ["screencapture", "-x", screenshot_path],            # macOS
+        ["powershell", "-command", f"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen | ForEach-Object {{ $bitmap = New-Object System.Drawing.Bitmap($_.Bounds.Width, $_.Bounds.Height); $graphics = [System.Drawing.Graphics]::FromImage($bitmap); $graphics.CopyFromScreen($_.Bounds.Location, [System.Drawing.Point]::Empty, $_.Bounds.Size); $bitmap.Save('{screenshot_path}') }}"],  # Windows
+    ]:
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=10)
+            if r.returncode == 0 and os.path.exists(screenshot_path):
+                return screenshot_path
+        except (FileNotFoundError, Exception):
+            continue
+    
+    return ""
+
+
 # Tool dispatch
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
@@ -1089,6 +1202,7 @@ TOOL_DISPATCH = {
     "git_commit": lambda args: tool_git_commit(args["message"]),
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
+    "view_image": lambda args: tool_view_image(args["path"]),
 }
 
 
@@ -1292,6 +1406,27 @@ def llm_request_with_retry(messages: List[Dict], tools: List[Dict] = None) -> Di
 def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
     """Send request to llama-server and return the full response while streaming text."""
     global LAST_GENERATION_STATS
+    
+    # Inject pending images into the last user message as multimodal content
+    if PENDING_IMAGES and messages:
+        messages = [m.copy() for m in messages]  # Don't mutate originals
+        # Find last user message and convert to multimodal format
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                existing_content = messages[i].get("content", "")
+                content_parts = []
+                if isinstance(existing_content, str) and existing_content:
+                    content_parts.append({"type": "text", "text": existing_content})
+                elif isinstance(existing_content, list):
+                    content_parts = list(existing_content)
+                for img in PENDING_IMAGES:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{img['mime']};base64,{img['base64']}"}
+                    })
+                messages[i]["content"] = content_parts
+                break
+        PENDING_IMAGES.clear()
     
     payload = {
         "messages": messages,
@@ -1974,6 +2109,18 @@ def handle_slash(cmd: str) -> bool:
                 print(f"  Speed: {tps}")
             print()
 
+    elif command == "/screenshot":
+        # Take a screenshot and include it in the conversation
+        print("  Taking screenshot...")
+        path = _take_screenshot()
+        if path:
+            result = tool_view_image(path)
+            print(f"  {result}")
+            print("  The screenshot will be sent with your next message.")
+        else:
+            print("  Error: Could not take screenshot.")
+            print("  Requires one of: scrot, maim, gnome-screenshot (Linux), screencapture (macOS), or PowerShell (Windows)")
+
     elif command == "/undo":
         if not UNDO_STACK:
             print("  Nothing to undo.")
@@ -2057,6 +2204,7 @@ def handle_slash(cmd: str) -> bool:
   /export [name] Export conversation as markdown
   /pipe <file>   Save last assistant response to file
   /stats         Show generation stats (tokens, time, tokens/sec)
+  /screenshot    Take a screenshot and send to vision model
   /remember <text>  Save a note to project memory (.trashclaw/memory.json)
   /undo          Undo last file write or edit
   /config        Show/set persistent config
