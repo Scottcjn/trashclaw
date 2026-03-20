@@ -56,29 +56,79 @@ def _load_config(cwd: str = None) -> Dict:
         except Exception:
             pass
             
-    # 2. Project config from .trashclaw.toml in CWD
-    # We use a minimal TOML parser to keep zero external dependencies on Python < 3.11
+    # 2. Project config from .trashclaw.toml or .trashclaw.json in CWD
     target_cwd = cwd or os.getcwd()
-    project_config = os.path.join(target_cwd, ".trashclaw.toml")
-    if os.path.exists(project_config):
+    
+    # Try .trashclaw.toml first, then .trashclaw.json fallback
+    toml_path = os.path.join(target_cwd, ".trashclaw.toml")
+    json_path = os.path.join(target_cwd, ".trashclaw.json")
+    
+    if os.path.exists(toml_path):
         try:
-            with open(project_config, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"): continue
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip().strip('"').strip("'")
-                        # Basic type casting
-                        if v.lower() == "true": v = True
-                        elif v.lower() == "false": v = False
-                        elif v.isdigit(): v = int(v)
-                        cfg[k] = v
+            cfg.update(_parse_toml_minimal(toml_path))
+        except Exception:
+            pass
+    elif os.path.exists(json_path):
+        try:
+            with open(json_path, "r") as f:
+                cfg.update(json.load(f))
         except Exception:
             pass
             
     return cfg
+
+
+def _parse_toml_minimal(path: str) -> Dict:
+    """Minimal TOML parser supporting strings, bools, ints, and string arrays.
+    
+    Uses stdlib tomllib on Python 3.11+ with manual fallback for older versions.
+    Handles: key = "value", key = true/false, key = 123, key = ["a", "b"]
+    """
+    # Try stdlib tomllib first (Python 3.11+)
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except ImportError:
+        pass
+    
+    # Manual fallback for Python < 3.11
+    result: Dict = {}
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            
+            # Array: ["item1", "item2"]
+            if v.startswith("["):
+                # Parse simple string array
+                items = []
+                inner = v.strip("[]").strip()
+                if inner:
+                    for item in inner.split(","):
+                        item = item.strip().strip('"').strip("'")
+                        if item:
+                            items.append(item)
+                result[k] = items
+            # Boolean
+            elif v.lower() == "true":
+                result[k] = True
+            elif v.lower() == "false":
+                result[k] = False
+            # Integer
+            elif v.lstrip("-").isdigit():
+                result[k] = int(v)
+            # String (quoted or bare)
+            else:
+                result[k] = v.strip('"').strip("'")
+    
+    return result
 
 def _apply_config(cfg: Dict):
     """Apply config dict to global variables."""
@@ -531,8 +581,36 @@ def _auto_compact():
 
 
 def _load_project_instructions() -> str:
-    """Load project-specific instructions from .trashclaw.md or CLAUDE.md in CWD."""
+    """Load project-specific instructions from .trashclaw.md or CLAUDE.md in CWD.
+    
+    Also loads context_files and system_prompt from .trashclaw.toml/.trashclaw.json
+    project config if present.
+    """
     result = ""
+    
+    # Load context_files from project config (auto-loaded into conversation context)
+    config = _load_config(CWD)
+    context_files = config.get("context_files", [])
+    if isinstance(context_files, list) and context_files:
+        loaded = []
+        for rel_path in context_files:
+            abs_path = os.path.join(CWD, rel_path)
+            if os.path.exists(abs_path):
+                try:
+                    with open(abs_path, "r") as f:
+                        content = f.read(4000)
+                    loaded.append(f"--- {rel_path} ---\n{content}")
+                except Exception:
+                    pass
+        if loaded:
+            result += "\n\n--- Auto-loaded Context Files ---\n" + "\n\n".join(loaded)
+    
+    # Load system_prompt from project config
+    sys_prompt = config.get("system_prompt", "")
+    if sys_prompt:
+        result += f"\n\n--- Project System Prompt ---\n{sys_prompt}"
+    
+    # Load .trashclaw.md / CLAUDE.md instructions
     for name in (".trashclaw.md", "TRASHCLAW.md", "CLAUDE.md"):
         path = os.path.join(CWD, name)
         if os.path.exists(path):
