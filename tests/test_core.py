@@ -1,12 +1,10 @@
 import os
-import sys
-import shutil
 import pytest
-import json
+import trashclaw
 from trashclaw import (
     tool_read_file, tool_write_file, tool_edit_file, tool_patch_file,
     tool_list_dir, tool_find_files, tool_search_files, tool_run_command,
-    _load_config, _CFG, CWD
+    _load_config, _CFG, CWD, handle_slash, LAST_ASSISTANT_RESPONSE
 )
 
 @pytest.fixture
@@ -14,7 +12,6 @@ def test_env(tmp_path):
     """Setup a temporary workspace for file operations."""
     d = tmp_path / "workspace"
     d.mkdir()
-    # Mock global CWD or just pass absolute paths
     return d
 
 def test_write_and_read_file(test_env):
@@ -91,7 +88,6 @@ def test_search_files(test_env):
 
 def test_run_command_basic():
     # run_command respects global APPROVE_SHELL, usually off in tests or we need to mock it
-    # For now, test a simple echo that usually doesn't prompt or mock if needed
     import trashclaw
     trashclaw.APPROVE_SHELL = False
     
@@ -106,3 +102,21 @@ def test_load_config_project(test_env):
     cfg = _load_config(str(test_env))
     assert cfg.get("model") == "test-model-abc"
     assert cfg.get("auto_shell") == True
+
+def test_pipe_command(test_env, monkeypatch):
+    import trashclaw
+    monkeypatch.setattr(trashclaw, "CWD", str(test_env))
+    monkeypatch.setattr(trashclaw, "LAST_ASSISTANT_RESPONSE", "Mock Response Data")
+    
+    # 1. Pipe with explicit filename
+    handle_slash("/pipe test_output.txt")
+    output_file = test_env / "test_output.txt"
+    assert output_file.exists()
+    assert output_file.read_text() == "Mock Response Data"
+    
+    # 2. Pipe with auto-timestamp (no arg)
+    handle_slash("/pipe")
+    # Should create output_YYYYMMDD_HHMMSS.md
+    matches = list(test_env.glob("output_*.md"))
+    assert len(matches) == 1
+    assert matches[0].read_text() == "Mock Response Data"

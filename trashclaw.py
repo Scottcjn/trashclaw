@@ -1941,19 +1941,22 @@ def handle_slash(cmd: str) -> bool:
     elif command == "/pipe":
         # Save last assistant response to file
         global LAST_ASSISTANT_RESPONSE
-        if not arg:
-            print("  Usage: /pipe <filename>")
-            print("  Saves the last assistant response to the specified file.")
-        elif not LAST_ASSISTANT_RESPONSE:
+        if not LAST_ASSISTANT_RESPONSE:
             print("  Error: No assistant response to save yet.")
         else:
+            if not arg:
+                # Use timestamp-based name if no filename provided
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                arg = f"output_{ts}.md"
+            
             pipe_path = _resolve_path(arg)
             try:
                 os.makedirs(os.path.dirname(pipe_path), exist_ok=True)
                 with open(pipe_path, 'w', encoding='utf-8') as f:
                     f.write(LAST_ASSISTANT_RESPONSE)
                 lines = LAST_ASSISTANT_RESPONSE.count('\n') + 1
-                print(f"  Piped last response to {pipe_path} ({len(LAST_ASSISTANT_RESPONSE)} bytes, {lines} lines)")
+                size = len(LAST_ASSISTANT_RESPONSE)
+                print(f"  Piped last response to {pipe_path} ({size} bytes, {lines} lines)")
             except Exception as e:
                 print(f"  Error: {e}")
 
