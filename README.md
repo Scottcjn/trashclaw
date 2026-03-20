@@ -137,6 +137,8 @@ See `plugins/example_weather.py` for a complete example.
 
 See [WINDOWS_COMPATIBILITY.md](WINDOWS_COMPATIBILITY.md) for detailed setup.
 
+> **Pro Tip:** Use [Windows Terminal](https://aka.ms/terminal) (free from Microsoft Store) for the best experience with colors and Unicode support.
+
 ```powershell
 pip install pyreadline3  # Optional: enables command history
 python trashclaw.py
