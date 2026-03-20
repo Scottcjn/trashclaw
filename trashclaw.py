@@ -113,6 +113,7 @@ APPROVED_COMMANDS: set = set()
 EXTRA_SYSTEM_PROMPT: str = ""
 LAST_ASSISTANT_RESPONSE: str = ""  # For /pipe command
 LAST_GENERATION_STATS: Dict = {}  # {tokens, seconds, tokens_per_sec} for /stats
+SESSION_STATS: Dict = {"total_tokens": 0, "total_seconds": 0.0, "total_turns": 0}  # Cumulative
 ACHIEVEMENTS_FILE = os.path.join(CONFIG_DIR, "achievements.json")
 
 # ── Trashy's Soul ──
@@ -1374,6 +1375,10 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
         "seconds": elapsed,
         "tokens_per_sec": tokens_per_sec
     }
+    # Accumulate session-wide stats
+    SESSION_STATS["total_tokens"] += token_count
+    SESSION_STATS["total_seconds"] += elapsed
+    SESSION_STATS["total_turns"] += 1
     
     return {
         "choices": [{
@@ -1665,6 +1670,9 @@ def handle_slash(cmd: str) -> bool:
         print(f"  Max rounds: {MAX_TOOL_ROUNDS} | Shell approval: {'on' if APPROVE_SHELL else 'off'}")
         if APPROVED_COMMANDS:
             print(f"  Auto-approved: {', '.join(sorted(APPROVED_COMMANDS))}")
+        if SESSION_STATS["total_turns"] > 0:
+            avg_tps = SESSION_STATS["total_tokens"] / SESSION_STATS["total_seconds"] if SESSION_STATS["total_seconds"] > 0 else 0
+            print(f"  Session: {SESSION_STATS['total_tokens']:,} tokens | {SESSION_STATS['total_seconds']:.1f}s | {avg_tps:.1f} avg tok/s | {SESSION_STATS['total_turns']} turns")
 
     elif command == "/compact":
         # Keep only last 10 messages
@@ -1972,6 +1980,14 @@ def handle_slash(cmd: str) -> bool:
                 print(f"  Speed: {tps:.1f} tokens/sec")
             else:
                 print(f"  Speed: {tps}")
+            # Cumulative session stats
+            if SESSION_STATS["total_turns"] > 0:
+                avg_tps = SESSION_STATS["total_tokens"] / SESSION_STATS["total_seconds"] if SESSION_STATS["total_seconds"] > 0 else 0
+                print(f"\n  \033[1mSession Totals\033[0m")
+                print(f"  Total tokens: {SESSION_STATS['total_tokens']:,}")
+                print(f"  Total time: {SESSION_STATS['total_seconds']:.1f}s")
+                print(f"  Avg speed: {avg_tps:.1f} tokens/sec")
+                print(f"  Turns: {SESSION_STATS['total_turns']}")
             print()
 
     elif command == "/undo":
