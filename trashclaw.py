@@ -451,6 +451,37 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "word_count",
+            "description": "Count words, characters, and lines in text or a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to count (optional)"},
+                    "text": {"type": "string", "description": "Direct text to count (optional)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "base64",
+            "description": "Encode or decode text using base64.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "'encode' or 'decode'", "enum": ["encode", "decode"]},
+                    "text": {"type": "string", "description": "Text to encode/decode (optional)"},
+                    "path": {"type": "string", "description": "File path to read from (optional)"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "git_status",
             "description": "Show git status of the working directory. Returns modified, staged, and untracked files.",
             "parameters": {
@@ -1156,6 +1187,58 @@ def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
 
+def tool_word_count(path: str = None, text: str = None) -> str:
+    """Count words, characters, and lines in text or a file."""
+    if text is None and path is None:
+        return "Error: Provide either 'text' or 'path' parameter"
+    
+    if text is None and path:
+        resolved = _resolve_path(path)
+        if not os.path.exists(resolved):
+            return f"Error: File not found: {resolved}"
+        try:
+            with open(resolved, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except Exception as e:
+            return f"Error reading file: {e}"
+    
+    words = len(text.split())
+    chars = len(text)
+    lines = len(text.splitlines())
+    
+    return f"Words: {words:,} | Characters: {chars:,} | Lines: {lines:,}"
+
+
+def tool_base64(action: str = "encode", text: str = None, path: str = None) -> str:
+    """Encode or decode text using base64."""
+    import base64
+    
+    if text is None and path is None:
+        return "Error: Provide either 'text' or 'path' parameter"
+    
+    if text is None and path:
+        resolved = _resolve_path(path)
+        if not os.path.exists(resolved):
+            return f"Error: File not found: {resolved}"
+        try:
+            with open(resolved, 'r', encoding='utf-8') as f:
+                text = f.read().strip()
+        except Exception as e:
+            return f"Error reading file: {e}"
+    
+    try:
+        if action == "encode":
+            result = base64.b64encode(text.encode('utf-8')).decode('utf-8')
+            return f"Encoded: {result}"
+        elif action == "decode":
+            result = base64.b64decode(text).decode('utf-8')
+            return f"Decoded: {result}"
+        else:
+            return "Error: action must be 'encode' or 'decode'"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # ── Vision Support ──
 
 VISION_SUPPORTED: Optional[bool] = None  # None = not yet checked
@@ -1260,6 +1343,8 @@ TOOL_DISPATCH = {
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
     "view_image": lambda args: tool_view_image(args["path"]),
+    "word_count": lambda args: tool_word_count(args.get("path"), args.get("text")),
+    "base64": lambda args: tool_base64(args.get("action", "encode"), args.get("text"), args.get("path")),
 }
 
 
