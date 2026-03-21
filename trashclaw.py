@@ -1318,6 +1318,62 @@ def _load_plugins():
         print(f"  \033[32m[plugins]\033[0m Loaded {loaded} plugin{'s' if loaded != 1 else ''} from {PLUGINS_DIR}")
 
 
+def _detect_gpu_info() -> Dict:
+    """Detect GPU information on macOS using system_profiler.
+    
+    Returns dict with:
+    - gpu_type: 'discrete' | 'integrated' | 'unknown'
+    - gpu_name: GPU model name
+    - metal_supported: bool
+    """
+    if sys.platform != "darwin":
+        return {"gpu_type": "unknown", "gpu_name": "Non-macOS system", "metal_supported": False}
+    
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["system_profiler", "SPDisplaysDataType"],
+            capture_output=True, text=True, timeout=10
+        )
+        
+        if result.returncode != 0:
+            return {"gpu_type": "unknown", "gpu_name": "Unknown", "metal_supported": False}
+        
+        output = result.stdout.lower()
+        
+        # Detect discrete GPUs (AMD FirePro, AMD Radeon Pro, NVIDIA)
+        discrete_keywords = ["firepro", "radeon pro", "amd radeon", "nvidia"]
+        # Detect integrated GPUs (Intel Iris, Intel HD)
+        integrated_keywords = ["intel iris", "intel hd", "intel uhd"]
+        
+        gpu_name = "Unknown"
+        gpu_type = "unknown"
+        
+        for line in output.split('\n'):
+            if any(kw in line for kw in discrete_keywords):
+                gpu_type = "discrete"
+                # Extract GPU name
+                if ":" in line:
+                    gpu_name = line.split(":")[1].strip()
+                break
+            elif any(kw in line for kw in integrated_keywords):
+                gpu_type = "integrated"
+                if ":" in line:
+                    gpu_name = line.split(":")[1].strip()
+        
+        # Metal is supported on macOS 10.15+ with Metal-capable GPU
+        # All discrete GPUs from 2013+ support Metal
+        metal_supported = gpu_type != "unknown"
+        
+        return {
+            "gpu_type": gpu_type,
+            "gpu_name": gpu_name,
+            "metal_supported": metal_supported
+        }
+    except Exception as e:
+        return {"gpu_type": "unknown", "gpu_name": f"Detection error: {e}", "metal_supported": False}
+
+
 def detect_project_context() -> str:
     """Scan CWD for common project files and return a summary of the framework/language."""
     files = set(os.listdir(CWD))
@@ -1862,6 +1918,12 @@ def handle_slash(cmd: str) -> bool:
         if s["turns"] > 0:
             avg_tps = s["total_tokens"] / s["total_seconds"] if s["total_seconds"] > 0 else 0
             print(f"  Generation: {s['total_tokens']} tokens in {s['turns']} turns ({avg_tps:.1f} avg tok/s)")
+        
+        # GPU/Metal status
+        gpu_info = _detect_gpu_info()
+        if gpu_info["gpu_type"] != "unknown":
+            metal_status = "✓" if gpu_info["metal_supported"] else "✗"
+            print(f"  GPU: {gpu_info['gpu_name']} ({gpu_info['gpu_type']}) | Metal: {metal_status}")
 
     elif command == "/compact":
         # Keep only last 10 messages
