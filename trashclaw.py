@@ -531,6 +531,48 @@ TOOLS = [
                 "required": ["path"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "word_count",
+            "description": "Count words, characters, and lines in a given text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The text to analyze"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "json_format",
+            "description": "Format and pretty-print a JSON string.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data": {"type": "string", "description": "The JSON string to format"}
+                },
+                "required": ["data"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "timestamp",
+            "description": "Convert between Unix timestamps and human-readable dates. Provide either 'ts' (number) or 'date' (string).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ts": {"type": "number", "description": "Unix timestamp in seconds (e.g. 1672531200)"},
+                    "date": {"type": "string", "description": "Date string format YYYY-MM-DD HH:MM:SS"}
+                }
+            }
+        }
     }
 ]
 
@@ -1243,6 +1285,40 @@ def tool_view_image(path: str) -> str:
         return f"Error reading image: {e}"
 
 
+
+def tool_word_count(text: str) -> str:
+    """Count words, characters, and lines in a given text."""
+    lines = len(text.splitlines())
+    words = len(text.split())
+    chars = len(text)
+    return json.dumps({"lines": lines, "words": words, "chars": chars})
+
+def tool_json_format(data: str) -> str:
+    """Format and pretty-print a JSON string."""
+    try:
+        parsed = json.loads(data)
+        return json.dumps(parsed, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return f"Error formatting JSON: {str(e)}"
+
+def tool_timestamp(ts: float = None, date: str = None) -> str:
+    """Convert between Unix timestamps and human-readable dates."""
+    try:
+        from datetime import datetime, timezone
+        if ts is not None:
+            dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        elif date is not None:
+            try:
+                dt = datetime.fromisoformat(date.replace("Z", "+00:00"))
+            except ValueError:
+                dt = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
+            return str(int(dt.replace(tzinfo=timezone.utc).timestamp()))
+        else:
+            return "Error: Provide either 'ts' or 'date'."
+    except Exception as e:
+        return f"Error processing timestamp: {str(e)}"
+
 # Tool dispatch
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
@@ -1260,6 +1336,9 @@ TOOL_DISPATCH = {
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
     "view_image": lambda args: tool_view_image(args["path"]),
+    "word_count": lambda args: tool_word_count(args["text"]),
+    "json_format": lambda args: tool_json_format(args["data"]),
+    "timestamp": lambda args: tool_timestamp(args.get("ts"), args.get("date")),
 }
 
 
