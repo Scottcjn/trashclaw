@@ -134,7 +134,7 @@ See `plugins/example_weather.py` for a complete example.
 - **Undo**: `/undo` rolls back file changes
 - **Non-interactive**: `--exec "prompt"` or pipe via stdin
 - **Achievements**: 10 milestones tracked persistently
-- **Hardware detection**: Celebrates vintage — PowerPC G4, G5, POWER8, Mac Pro Trashcan
+- **Hardware detection**: Detects and displays system info — supports vintage hardware (PowerPC G4/G5, IBM POWER8, Mac Pro Trashcan)
 
 ## Setup
 
@@ -143,7 +143,7 @@ See `plugins/example_weather.py` for a complete example.
 See [WINDOWS_COMPATIBILITY.md](WINDOWS_COMPATIBILITY.md) for detailed setup.
 
 ```powershell
-pip install pyreadline3  # Optional: enables command history
+pip install pyreadline3  # Required on Windows: enables readline support and command history
 python trashclaw.py
 ```
 
