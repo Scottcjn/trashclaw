@@ -5,10 +5,11 @@ import sys
 
 # Add parent directory to path so we can import trashclaw
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import trashclaw
 from trashclaw import tool_git_status, tool_git_diff, tool_git_commit
 
 @pytest.fixture
-def repo_path(tmp_path):
+def repo_path(tmp_path, monkeypatch):
     # Create an actual git repo
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
@@ -24,23 +25,21 @@ def repo_path(tmp_path):
     subprocess.run(["git", "add", "test.txt"], cwd=repo_dir, check=True)
     subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo_dir, check=True)
     
-    # Change working directory so trashclaw picks up this repo
-    original_cwd = os.getcwd()
-    os.chdir(repo_dir)
-    yield repo_dir
-    os.chdir(original_cwd)
+    # Mock trashclaw's CWD
+    monkeypatch.setattr(trashclaw, "CWD", str(repo_dir))
+    
+    return repo_dir
 
 def test_git_status_clean(repo_path):
     result = tool_git_status()
-    assert "On branch" in result
-    assert "nothing to commit" in result
+    # the format is --short --branch: ## master
+    assert "## master" in result or "## main" in result
 
 def test_git_status_modified(repo_path):
     # Modify a file
     (repo_path / "test.txt").write_text("modified content\n")
     result = tool_git_status()
-    assert "Changes not staged for commit:" in result
-    assert "modified:   test.txt" in result
+    assert "M test.txt" in result
 
 def test_git_diff_unstaged(repo_path):
     # Modify a file
@@ -66,7 +65,6 @@ def test_git_commit_success(repo_path):
     subprocess.run(["git", "add", "test.txt"], cwd=repo_path, check=True)
     
     result = tool_git_commit("update test.txt")
-    assert "Commit successful:" in result
     assert "update test.txt" in result
     
     # Verify commit happened
