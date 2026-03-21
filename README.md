@@ -8,7 +8,7 @@
 
 A general-purpose local agent that runs on anything — from a 2013 Mac Pro trashcan to a PowerBook G4 to an IBM POWER8 mainframe. No cloud, no API keys, no dependencies beyond Python 3.7 and any local LLM server.
 
-**14 tools. 21 commands. Plugin system. Achievements. Zero dependencies.**
+**15 tools. 23 commands. Plugin system. Achievements. Zero dependencies.**
 
 ## What it does
 
@@ -47,7 +47,7 @@ TRASHCLAW_URL=http://your-server:8080 python3 trashclaw.py
 
 No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 
-## Tools (14 built-in + unlimited plugins)
+## Tools (15 built-in + unlimited plugins)
 
 | Tool | Description |
 |------|-------------|
@@ -63,10 +63,12 @@ No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 | `git_status` | Show modified/staged/untracked files |
 | `git_diff` | Show unstaged or staged changes |
 | `git_commit` | Stage all changes and commit |
+
 | `clipboard` | Copy/paste from system clipboard |
 | `think` | Reason through problems before acting |
+| `view_image` | Open an image file for visual analysis |
 
-## Commands (21)
+## Commands (23)
 
 | Command | Description |
 |---------|-------------|
@@ -86,8 +88,11 @@ No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 | `/sessions` | List saved sessions |
 | `/stats` | Show generation stats (tokens, time, tok/s) |
 | `/status` | Server, model, context, git branch, stats |
+
 | `/undo` | Undo last file write or edit |
 | `/achievements` | Show your progress and stats |
+| `/image <path>` | Load an image for the next prompt |
+| `/screenshot` | Take a screenshot and include in next prompt |
 | `/about` | The manifesto |
 | `/help` | Full command reference |
 | `/exit` | Quit |
