@@ -1529,6 +1529,12 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
                 except json.JSONDecodeError:
                     pass
         print() # Newline after streaming completes
+        
+        # Display generation stats after completion
+        if token_count > 0:
+            elapsed_display = time.time() - start_time
+            tokens_per_sec = token_count / elapsed_display if elapsed_display > 0 else 0
+            print(f"  [Generation: {tokens_per_sec:.1f} tok/s | {token_count} tokens | {elapsed_display:.1f}s]")
     except urllib.error.URLError as e:
         return {"error": f"Cannot reach llama-server: {e}"}
     except Exception as e:
@@ -1861,7 +1867,11 @@ def handle_slash(cmd: str) -> bool:
         s = SESSION_STATS
         if s["turns"] > 0:
             avg_tps = s["total_tokens"] / s["total_seconds"] if s["total_seconds"] > 0 else 0
-            print(f"  Generation: {s['total_tokens']} tokens in {s['turns']} turns ({avg_tps:.1f} avg tok/s)")
+            print(f"  Session stats: {s['total_tokens']} tokens | {s['turns']} turns | {s['total_seconds']:.1f}s total")
+            print(f"  Average speed: {avg_tps:.1f} tok/s")
+        if LAST_GENERATION_STATS:
+            g = LAST_GENERATION_STATS
+            print(f"  Last generation: {g['tokens_per_sec']:.1f} tok/s | {g['tokens']} tokens | {g['seconds']:.1f}s")
 
     elif command == "/compact":
         # Keep only last 10 messages
