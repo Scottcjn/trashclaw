@@ -1313,7 +1313,11 @@ def tool_timestamp(ts: float = None, date: str = None) -> str:
                 dt = datetime.fromisoformat(date.replace("Z", "+00:00"))
             except ValueError:
                 dt = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
-            return str(int(dt.replace(tzinfo=timezone.utc).timestamp()))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return str(int(dt.timestamp()))
         else:
             return "Error: Provide either 'ts' or 'date'."
     except Exception as e:
@@ -1447,6 +1451,9 @@ TOOLS:
 - git_status / git_diff / git_commit: Git operations
 - clipboard: Read/write system clipboard
 - think: Reason step by step before acting
+- word_count: Count words, lines, and characters in text or files
+- json_format: Pretty-print or normalize JSON
+- timestamp: Get the current timestamp in various formats
 
 BOUDREAUX RULES:
 These are non-negotiable. They come from building real systems on real hardware.
@@ -2128,16 +2135,18 @@ def handle_slash(cmd: str) -> bool:
             print(f"  def run(**kwargs) -> str: ...")
         else:
             plugins = [f for f in os.listdir(PLUGINS_DIR) if f.endswith('.py') and not f.startswith('_')]
-            builtin_count = 14  # built-in tools
-            plugin_count = len(TOOLS) - builtin_count
+            plugin_count = 0
             if not plugins:
                 print(f"  Plugin directory exists but no plugins found.")
             else:
                 print(f"  \033[1mPlugins\033[0m ({PLUGINS_DIR})")
                 for p in sorted(plugins):
                     loaded = any(t["function"]["name"] == p[:-3] for t in TOOLS)
+                    if loaded:
+                        plugin_count += 1
                     status = "\033[32mloaded\033[0m" if loaded else "\033[31mfailed\033[0m"
                     print(f"    {p} [{status}]")
+            builtin_count = len(TOOLS) - plugin_count
             print(f"\n  Total tools: {len(TOOLS)} ({builtin_count} built-in + {plugin_count} plugins)")
 
     elif command == "/about":

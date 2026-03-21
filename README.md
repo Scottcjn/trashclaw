@@ -47,7 +47,7 @@ TRASHCLAW_URL=http://your-server:8080 python3 trashclaw.py
 
 No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 
-## Tools (14 built-in + unlimited plugins)
+## Tools (17 built-in + unlimited plugins)
 
 | Tool | Description |
 |------|-------------|
