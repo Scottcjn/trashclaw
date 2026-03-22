@@ -8,7 +8,7 @@
 
 A general-purpose local agent that runs on anything — from a 2013 Mac Pro trashcan to a PowerBook G4 to an IBM POWER8 mainframe. No cloud, no API keys, no dependencies beyond Python 3.7 and any local LLM server.
 
-**14 tools. 21 commands. Plugin system. Achievements. Zero dependencies.**
+**17 tools. 21 commands. Plugin system. Achievements. Zero dependencies.**
 
 ## What it does
 
@@ -47,7 +47,7 @@ TRASHCLAW_URL=http://your-server:8080 python3 trashclaw.py
 
 No pip install. Single file. Zero dependencies. Python 3.7+ stdlib only.
 
-## Tools (14 built-in + unlimited plugins)
+## Tools (17 built-in + unlimited plugins)
 
 | Tool | Description |
 |------|-------------|

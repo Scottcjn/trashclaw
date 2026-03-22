@@ -531,6 +531,48 @@ TOOLS = [
                 "required": ["path"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "word_count",
+            "description": "Count words, characters, and lines in a given text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The text to analyze"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "json_format",
+            "description": "Format and pretty-print a JSON string.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data": {"type": "string", "description": "The JSON string to format"}
+                },
+                "required": ["data"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "timestamp",
+            "description": "Convert between Unix timestamps and human-readable dates. Provide either 'ts' (number) or 'date' (string).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ts": {"type": "number", "description": "Unix timestamp in seconds (e.g. 1672531200)"},
+                    "date": {"type": "string", "description": "Date string format YYYY-MM-DD HH:MM:SS"}
+                }
+            }
+        }
     }
 ]
 
@@ -1243,6 +1285,44 @@ def tool_view_image(path: str) -> str:
         return f"Error reading image: {e}"
 
 
+
+def tool_word_count(text: str) -> str:
+    """Count words, characters, and lines in a given text."""
+    lines = len(text.splitlines())
+    words = len(text.split())
+    chars = len(text)
+    return json.dumps({"lines": lines, "words": words, "chars": chars})
+
+def tool_json_format(data: str) -> str:
+    """Format and pretty-print a JSON string."""
+    try:
+        parsed = json.loads(data)
+        return json.dumps(parsed, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return f"Error formatting JSON: {str(e)}"
+
+def tool_timestamp(ts: float = None, date: str = None) -> str:
+    """Convert between Unix timestamps and human-readable dates."""
+    try:
+        from datetime import datetime, timezone
+        if ts is not None:
+            dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        elif date is not None:
+            try:
+                dt = datetime.fromisoformat(date.replace("Z", "+00:00"))
+            except ValueError:
+                dt = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return str(int(dt.timestamp()))
+        else:
+            return "Error: Provide either 'ts' or 'date'."
+    except Exception as e:
+        return f"Error processing timestamp: {str(e)}"
+
 # Tool dispatch
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
@@ -1260,6 +1340,9 @@ TOOL_DISPATCH = {
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
     "view_image": lambda args: tool_view_image(args["path"]),
+    "word_count": lambda args: tool_word_count(args["text"]),
+    "json_format": lambda args: tool_json_format(args["data"]),
+    "timestamp": lambda args: tool_timestamp(args.get("ts"), args.get("date")),
 }
 
 
@@ -1368,6 +1451,9 @@ TOOLS:
 - git_status / git_diff / git_commit: Git operations
 - clipboard: Read/write system clipboard
 - think: Reason step by step before acting
+- word_count: Count words, lines, and characters in text or files
+- json_format: Pretty-print or normalize JSON
+- timestamp: Get the current timestamp in various formats
 
 BOUDREAUX RULES:
 These are non-negotiable. They come from building real systems on real hardware.
@@ -2049,16 +2135,18 @@ def handle_slash(cmd: str) -> bool:
             print(f"  def run(**kwargs) -> str: ...")
         else:
             plugins = [f for f in os.listdir(PLUGINS_DIR) if f.endswith('.py') and not f.startswith('_')]
-            builtin_count = 14  # built-in tools
-            plugin_count = len(TOOLS) - builtin_count
+            plugin_count = 0
             if not plugins:
                 print(f"  Plugin directory exists but no plugins found.")
             else:
                 print(f"  \033[1mPlugins\033[0m ({PLUGINS_DIR})")
                 for p in sorted(plugins):
                     loaded = any(t["function"]["name"] == p[:-3] for t in TOOLS)
+                    if loaded:
+                        plugin_count += 1
                     status = "\033[32mloaded\033[0m" if loaded else "\033[31mfailed\033[0m"
                     print(f"    {p} [{status}]")
+            builtin_count = len(TOOLS) - plugin_count
             print(f"\n  Total tools: {len(TOOLS)} ({builtin_count} built-in + {plugin_count} plugins)")
 
     elif command == "/about":
