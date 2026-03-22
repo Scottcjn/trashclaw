@@ -531,6 +531,50 @@ TOOLS = [
                 "required": ["path"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "word_count",
+            "description": "Count words, characters, and lines in a text string. Useful for checking text length or document stats.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to analyze"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "base64",
+            "description": "Encode or decode base64 text. Useful for encoding binary data or decoding base64 strings.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "'encode' or 'decode'", "enum": ["encode", "decode"]},
+                    "text": {"type": "string", "description": "Text to encode or base64 string to decode"}
+                },
+                "required": ["action", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hash",
+            "description": "Compute a hash of text. Supports SHA-256, SHA-1, and MD5 algorithms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to hash"},
+                    "algorithm": {"type": "string", "description": "Hash algorithm: 'sha256' (default), 'sha1', or 'md5'", "enum": ["sha256", "sha1", "md5"]}
+                },
+                "required": ["text"]
+            }
+        }
     }
 ]
 
@@ -1243,6 +1287,51 @@ def tool_view_image(path: str) -> str:
         return f"Error reading image: {e}"
 
 
+def tool_word_count(text: str) -> str:
+    """Count words, characters, and lines in text."""
+    lines = text.split("\n")
+    words = text.split()
+    chars = len(text)
+    chars_no_spaces = len(text.replace(" ", "").replace("\n", "").replace("\t", ""))
+    return (
+        f"Lines: {len(lines)}\n"
+        f"Words: {len(words)}\n"
+        f"Characters (with spaces): {chars}\n"
+        f"Characters (no spaces): {chars_no_spaces}"
+    )
+
+
+def tool_base64(action: str, text: str) -> str:
+    """Encode or decode base64 text."""
+    import base64 as b64
+    try:
+        if action == "encode":
+            result = b64.b64encode(text.encode("utf-8")).decode("utf-8")
+            return f"Encoded:\n{result}"
+        elif action == "decode":
+            result = b64.b64decode(text).decode("utf-8")
+            return f"Decoded:\n{result}"
+        else:
+            return f"Error: Unknown action '{action}'. Use 'encode' or 'decode'."
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def tool_hash(text: str, algorithm: str = "sha256") -> str:
+    """Compute a hash of the given text."""
+    import hashlib
+    algorithm = algorithm.lower()
+    if algorithm == "sha256":
+        h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    elif algorithm == "sha1":
+        h = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    elif algorithm == "md5":
+        h = hashlib.md5(text.encode("utf-8")).hexdigest()
+    else:
+        return f"Error: Unsupported algorithm '{algorithm}'. Use 'sha256', 'sha1', or 'md5'."
+    return f"{algorithm.upper()}: {h}"
+
+
 # Tool dispatch
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("offset"), args.get("limit")),
@@ -1260,6 +1349,9 @@ TOOL_DISPATCH = {
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
     "view_image": lambda args: tool_view_image(args["path"]),
+    "word_count": lambda args: tool_word_count(args["text"]),
+    "base64": lambda args: tool_base64(args["action"], args["text"]),
+    "hash": lambda args: tool_hash(args["text"], args.get("algorithm", "sha256")),
 }
 
 
