@@ -120,20 +120,11 @@ def _get_memory_info() -> str:
 def _get_disk_info() -> str:
     """Get disk usage for root/home drive."""
     try:
-        if platform.system() == "Windows":
-            import ctypes
-            free_bytes = ctypes.c_ulonglong(0)
-            total_bytes = ctypes.c_ulonglong(0)
-            ctypes.windll.kernel32.GetDiskFreeSpaceExW(
-                None, None, ctypes.byref(total_bytes), ctypes.byref(free_bytes)
-            )
-            total_gb = total_bytes.value / (1024**3)
-            free_gb = free_bytes.value / (1024**3)
-            return f"{free_gb:.1f} GB free of {total_gb:.1f} GB"
-        else:
-            import shutil
-            total, used, free = shutil.disk_usage("/")
-            return f"{free / (1024**3):.1f} GB free of {total / (1024**3):.1f} GB"
+        import shutil
+        # Use CWD or root depending on platform
+        path = "C:\\" if platform.system() == "Windows" else "/"
+        total, used, free = shutil.disk_usage(path)
+        return f"{free / (1024**3):.1f} GB free of {total / (1024**3):.1f} GB"
     except Exception:
         return "Unknown"
 
