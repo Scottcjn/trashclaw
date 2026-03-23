@@ -986,7 +986,7 @@ def tool_list_dir(path: str = None) -> str:
 
 def tool_fetch_url(url: str) -> str:
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TrashClaw/0.2'})
+        req = urllib.request.Request(url, headers={'User-Agent': f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TrashClaw/{VERSION}'})
         with urllib.request.urlopen(req, timeout=30) as response:
             html = response.read().decode('utf-8', errors='ignore')
             
