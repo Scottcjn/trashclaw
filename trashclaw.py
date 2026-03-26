@@ -1919,6 +1919,12 @@ def handle_slash(cmd: str) -> bool:
             avg_tps = s["total_tokens"] / s["total_seconds"] if s["total_seconds"] > 0 else 0
             print(f"  Generation: {s['total_tokens']} tokens in {s['turns']} turns ({avg_tps:.1f} avg tok/s)")
         
+        # Show last generation stats if available
+        if LAST_GENERATION_STATS:
+            stats = LAST_GENERATION_STATS
+            if 'tokens' in stats and 'seconds' in stats and 'tokens_per_sec' in stats:
+                print(f"  Last: [{stats['tokens_per_sec']:.1f} tok/s | {stats['tokens']} tokens | {stats['seconds']:.1f}s]")
+        
         # GPU/Metal status
         gpu_info = _detect_gpu_info()
         if gpu_info["gpu_type"] != "unknown":
@@ -1930,6 +1936,46 @@ def handle_slash(cmd: str) -> bool:
         old_len = len(HISTORY)
         HISTORY[:] = HISTORY[-10:]
         print(f"  Compacted {old_len} -> {len(HISTORY)} messages")
+
+    elif command == "/pipe":
+        # Save last assistant response to file
+        # Usage: /pipe [filename]
+        if not LAST_ASSISTANT_RESPONSE:
+            print("  ❌ No assistant message found")
+        else:
+            # Generate filename if not provided
+            if not arg:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"response_{timestamp}.md"
+            else:
+                filename = arg
+            
+            # Ensure output directory exists
+            output_dir = os.path.dirname(filename) or '.'
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Save to file
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(LAST_ASSISTANT_RESPONSE)
+                
+                # Get file size
+                file_size = os.path.getsize(filename)
+                # Format file size
+                for unit in ['B', 'KB', 'MB', 'GB']:
+                    if file_size < 1024.0:
+                        file_size_str = f"{file_size:.2f} {unit}"
+                        break
+                    file_size /= 1024.0
+                
+                # Get absolute path
+                abs_path = os.path.abspath(filename)
+                
+                print(f"  ✅ Saved to `{filename}`")
+                print(f"  📁 Path: `{abs_path}`")
+                print(f"  📊 Size: `{file_size_str}`")
+            except Exception as e:
+                print(f"  ❌ Error saving file: {str(e)}")
 
     elif command == "/save":
         # Save current conversation to JSON file
@@ -2199,9 +2245,8 @@ def handle_slash(cmd: str) -> bool:
 
     elif command == "/pipe":
         # Save last assistant response to file
-        global LAST_ASSISTANT_RESPONSE
         if not LAST_ASSISTANT_RESPONSE:
-            print("  Error: No assistant response to save yet.")
+            print("  ❌ No assistant message found")
         else:
             if not arg:
                 # Auto-generate timestamp-based filename
@@ -2212,9 +2257,9 @@ def handle_slash(cmd: str) -> bool:
                 with open(pipe_path, 'w', encoding='utf-8') as f:
                     f.write(LAST_ASSISTANT_RESPONSE)
                 lines = LAST_ASSISTANT_RESPONSE.count('\n') + 1
-                print(f"  Piped last response to {pipe_path} ({len(LAST_ASSISTANT_RESPONSE)} bytes, {lines} lines)")
+                print(f"  ✅ Saved to {pipe_path} ({len(LAST_ASSISTANT_RESPONSE)} bytes, {lines} lines)")
             except Exception as e:
-                print(f"  Error: {e}")
+                print(f"  ❌ Error: {e}")
 
     elif command == "/stats":
         # Show generation stats from last turn + cumulative session stats
