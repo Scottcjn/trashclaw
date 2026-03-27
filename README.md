@@ -143,9 +143,12 @@ See `plugins/example_weather.py` for a complete example.
 See [WINDOWS_COMPATIBILITY.md](WINDOWS_COMPATIBILITY.md) for detailed setup.
 
 ```powershell
+pip install pyreadline3  # Required: enables readline history and tab completion
 pip install pyreadline3  # Required on Windows: enables readline support and command history
 python trashclaw.py
 ```
+
+Without `pyreadline3`, arrow keys and tab completion will not work in the Windows terminal.
 
 ### llama.cpp (Recommended)
 
