@@ -451,6 +451,37 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "word_count",
+            "description": "Count words, characters, and lines in text or a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to count (optional)"},
+                    "text": {"type": "string", "description": "Direct text to count (optional)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "base64",
+            "description": "Encode or decode text using base64.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "'encode' or 'decode'", "enum": ["encode", "decode"]},
+                    "text": {"type": "string", "description": "Text to encode/decode (optional)"},
+                    "path": {"type": "string", "description": "File path to read from (optional)"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "git_status",
             "description": "Show git status of the working directory. Returns modified, staged, and untracked files.",
             "parameters": {
@@ -1156,6 +1187,58 @@ def tool_think(thought: str) -> str:
     return f"[Thought recorded, no side effects]"
 
 
+def tool_word_count(path: str = None, text: str = None) -> str:
+    """Count words, characters, and lines in text or a file."""
+    if text is None and path is None:
+        return "Error: Provide either 'text' or 'path' parameter"
+    
+    if text is None and path:
+        resolved = _resolve_path(path)
+        if not os.path.exists(resolved):
+            return f"Error: File not found: {resolved}"
+        try:
+            with open(resolved, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except Exception as e:
+            return f"Error reading file: {e}"
+    
+    words = len(text.split())
+    chars = len(text)
+    lines = len(text.splitlines())
+    
+    return f"Words: {words:,} | Characters: {chars:,} | Lines: {lines:,}"
+
+
+def tool_base64(action: str = "encode", text: str = None, path: str = None) -> str:
+    """Encode or decode text using base64."""
+    import base64
+    
+    if text is None and path is None:
+        return "Error: Provide either 'text' or 'path' parameter"
+    
+    if text is None and path:
+        resolved = _resolve_path(path)
+        if not os.path.exists(resolved):
+            return f"Error: File not found: {resolved}"
+        try:
+            with open(resolved, 'r', encoding='utf-8') as f:
+                text = f.read().strip()
+        except Exception as e:
+            return f"Error reading file: {e}"
+    
+    try:
+        if action == "encode":
+            result = base64.b64encode(text.encode('utf-8')).decode('utf-8')
+            return f"Encoded: {result}"
+        elif action == "decode":
+            result = base64.b64decode(text).decode('utf-8')
+            return f"Decoded: {result}"
+        else:
+            return "Error: action must be 'encode' or 'decode'"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # ── Vision Support ──
 
 VISION_SUPPORTED: Optional[bool] = None  # None = not yet checked
@@ -1260,6 +1343,8 @@ TOOL_DISPATCH = {
     "patch_file": lambda args: tool_patch_file(args["path"], args["patch"]),
     "clipboard": lambda args: tool_clipboard(args.get("action", "paste"), args.get("content", "")),
     "view_image": lambda args: tool_view_image(args["path"]),
+    "word_count": lambda args: tool_word_count(args.get("path"), args.get("text")),
+    "base64": lambda args: tool_base64(args.get("action", "encode"), args.get("text"), args.get("path")),
 }
 
 
@@ -1585,6 +1670,12 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
                 except json.JSONDecodeError:
                     pass
         print() # Newline after streaming completes
+        
+        # Display generation stats after completion
+        if token_count > 0:
+            elapsed_display = time.time() - start_time
+            tokens_per_sec = token_count / elapsed_display if elapsed_display > 0 else 0
+            print(f"  [Generation: {tokens_per_sec:.1f} tok/s | {token_count} tokens | {elapsed_display:.1f}s]")
     except urllib.error.URLError as e:
         return {"error": f"Cannot reach llama-server: {e}"}
     except Exception as e:
@@ -1930,6 +2021,11 @@ def handle_slash(cmd: str) -> bool:
         if gpu_info["gpu_type"] != "unknown":
             metal_status = "✓" if gpu_info["metal_supported"] else "✗"
             print(f"  GPU: {gpu_info['gpu_name']} ({gpu_info['gpu_type']}) | Metal: {metal_status}")
+            print(f"  Session stats: {s['total_tokens']} tokens | {s['turns']} turns | {s['total_seconds']:.1f}s total")
+            print(f"  Average speed: {avg_tps:.1f} tok/s")
+        if LAST_GENERATION_STATS:
+            g = LAST_GENERATION_STATS
+            print(f"  Last generation: {g['tokens_per_sec']:.1f} tok/s | {g['tokens']} tokens | {g['seconds']:.1f}s")
 
     elif command == "/compact":
         # Keep only last 10 messages
