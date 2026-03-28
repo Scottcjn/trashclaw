@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TrashClaw v0.3 — Local Tool-Use Agent
+TrashClaw v0.7.1 — Local Tool-Use Agent
 ======================================
 A general-purpose agent powered by a local LLM. Reads files, writes files,
 runs commands, searches codebases, manages git — whatever you need.
@@ -188,7 +188,7 @@ TRASHY_QUOTES = [
     "They closed our Metal PR. We built an agent.",
     "Pure stdlib. Pure spite. Pure Python.",
     "The hardware they rejected runs just fine.",
-    "1,547 lines of unfiltered capability.",
+    "2,588 lines of unfiltered capability.",
     "No VC funding. No corporate backing. Just vibes.",
     "If a Mac Pro trashcan can run inference, it can run you.",
     "Scrappy > corporate. Always.",
@@ -718,6 +718,7 @@ def _setup_tab_completion():
 
 
 def tool_read_file(path: str, offset: int = None, limit: int = None) -> str:
+    """Read file contents with optional line range. Returns numbered lines."""
     path = _resolve_path(path)
     try:
         with open(path, "r", errors="replace") as f:
@@ -759,6 +760,7 @@ def _save_undo(path: str, action: str):
 
 
 def tool_write_file(path: str, content: str) -> str:
+    """Create or overwrite a file with the given content."""
     path = _resolve_path(path)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -772,6 +774,7 @@ def tool_write_file(path: str, content: str) -> str:
 
 
 def tool_edit_file(path: str, old_string: str, new_string: str) -> str:
+    """Replace an exact string match in a file. Requires unique old_string. Shows colored diff."""
     path = _resolve_path(path)
     try:
         with open(path, "r") as f:
@@ -823,6 +826,7 @@ def tool_edit_file(path: str, old_string: str, new_string: str) -> str:
 
 
 def tool_run_command(command: str, timeout: int = 30) -> str:
+    """Execute a shell command with optional approval. Handles 'cd' specially."""
     global CWD
     if APPROVE_SHELL:
         # Check if command prefix is pre-approved
@@ -882,6 +886,7 @@ def tool_run_command(command: str, timeout: int = 30) -> str:
 
 
 def tool_search_files(pattern: str, path: str = None, glob_filter: str = None) -> str:
+    """Grep for a regex pattern across files. Skips hidden dirs and node_modules."""
     search_path = _resolve_path(path) if path else CWD
     results = []
     count = 0
@@ -918,6 +923,7 @@ def tool_search_files(pattern: str, path: str = None, glob_filter: str = None) -
 
 
 def tool_find_files(pattern: str, path: str = None) -> str:
+    """Find files by glob pattern. Returns paths with sizes and kinds."""
     base = _resolve_path(path) if path else CWD
     full_pattern = os.path.join(base, pattern)
     matches = sorted(globlib.glob(full_pattern, recursive=True))
@@ -949,6 +955,7 @@ def tool_find_files(pattern: str, path: str = None) -> str:
 
 
 def tool_list_dir(path: str = None) -> str:
+    """List directory contents with file sizes and types."""
     target = _resolve_path(path) if path else CWD
     if not os.path.isdir(target):
         return f"Error: Not a directory: {target}"
