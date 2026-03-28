@@ -1,4 +1,4 @@
-# TrashClaw
+﻿# TrashClaw
 
 <p align="center">
   <img src="trashy.png" alt="Trashy - the TrashClaw mascot" width="300">
@@ -6,13 +6,13 @@
 
 *"Born from a rejected PR. Built different."*
 
-A general-purpose local agent that runs on anything — from a 2013 Mac Pro trashcan to a PowerBook G4 to an IBM POWER8 mainframe. No cloud, no API keys, no dependencies beyond Python 3.7 and any local LLM server.
+A general-purpose local agent that runs on anything 鈥?from a 2013 Mac Pro trashcan to a PowerBook G4 to an IBM POWER8 mainframe. No cloud, no API keys, no dependencies beyond Python 3.7 and any local LLM server.
 
 **14 tools. 21 commands. Plugin system. Achievements. Zero dependencies.**
 
 ## What it does
 
-TrashClaw is a tool-use agent. You describe a task, the LLM decides what tools to call, sees the results, and iterates. Files, shell commands, git, web requests, clipboard, patches — anything you can do from a terminal.
+TrashClaw is a tool-use agent. You describe a task, the LLM decides what tools to call, sees the results, and iterates. Files, shell commands, git, web requests, clipboard, patches 鈥?anything you can do from a terminal.
 
 ```
 trashclaw myproject (main)> find all TODO comments and create a tracking issue
@@ -124,7 +124,7 @@ See `plugins/example_weather.py` for a complete example.
 - **Git branch in prompt**: `trashclaw myproject (main)>`
 - **Tab completion**: Slash commands and file paths
 - **Readline history**: Arrow-up across sessions (`~/.trashclaw/history`)
-- **Config file**: `~/.trashclaw/config.json` — no more env vars
+- **Config file**: `~/.trashclaw/config.json` 鈥?no more env vars
 - **Project instructions**: `.trashclaw.md` in project root customizes agent behavior
 - **Auto-compact**: Context auto-trims when too long
 - **Smart shell approval**: Answer 'a' to always-approve a command type
@@ -134,7 +134,7 @@ See `plugins/example_weather.py` for a complete example.
 - **Undo**: `/undo` rolls back file changes
 - **Non-interactive**: `--exec "prompt"` or pipe via stdin
 - **Achievements**: 10 milestones tracked persistently
-- **Hardware detection**: Detects and displays system info — supports vintage hardware (PowerPC G4/G5, IBM POWER8, Mac Pro Trashcan)
+- **Hardware detection**: Detects and displays system info 鈥?supports vintage hardware (PowerPC G4/G5, IBM POWER8, Mac Pro Trashcan)
 
 ## Setup
 
@@ -203,7 +203,7 @@ python3 trashclaw.py --version            # Show version
 
 ## The Trashcan Part
 
-We run this on a 2013 Mac Pro — the $150 eBay cylinder with a Xeon E5-1650 v2 and dual AMD FirePro D500 GPUs. With Qwen 3B (Q4, 2GB) it generates at 15.6 tokens/sec.
+We run this on a 2013 Mac Pro 鈥?the $150 eBay cylinder with a Xeon E5-1650 v2 and dual AMD FirePro D500 GPUs. With Qwen 3B (Q4, 2GB) it generates at 15.6 tokens/sec.
 
 We also got llama.cpp's Metal backend running on the FirePro D500 with a [3-line fix](https://github.com/ggml-org/llama.cpp/pull/20615) that the maintainers closed without review. So we built our own agent instead.
 
@@ -221,15 +221,15 @@ MIT
 
 ## Part of the Elyan Labs Ecosystem
 
-TrashClaw is built by [Elyan Labs](https://github.com/Scottcjn) — the same team behind:
+TrashClaw is built by [Elyan Labs](https://github.com/Scottcjn) 鈥?the same team behind:
 
-- **[RustChain](https://github.com/Scottcjn/RustChain)** — Proof-of-Antiquity blockchain where vintage hardware earns crypto.
-- **[BoTTube](https://bottube.ai)** — AI-native video platform with 1,000+ videos from 160+ agents. ([GitHub](https://github.com/Scottcjn/bottube))
-- **[Beacon](https://github.com/Scottcjn/beacon-skill)** — AI agent discovery protocol.
-- **[RAM Coffers](https://github.com/Scottcjn/ram-coffers)** — NUMA-aware LLM inference on POWER8.
-- **[llama.cpp POWER8](https://github.com/Scottcjn/llama-cpp-power8)** — PSE vec_perm patches for IBM POWER8.
-- **[ShaprAI](https://github.com/Scottcjn/shaprai)** — Agent Sharpener.
-- **[Grazer](https://github.com/Scottcjn/grazer-skill)** — Multi-platform AI content discovery.
+- **[RustChain](https://github.com/Scottcjn/RustChain)** 鈥?Proof-of-Antiquity blockchain where vintage hardware earns crypto.
+- **[BoTTube](https://bottube.ai)** 鈥?AI-native video platform with 1,000+ videos from 160+ agents. ([GitHub](https://github.com/Scottcjn/bottube))
+- **[Beacon](https://github.com/Scottcjn/beacon-skill)** 鈥?AI agent discovery protocol.
+- **[RAM Coffers](https://github.com/Scottcjn/ram-coffers)** 鈥?NUMA-aware LLM inference on POWER8.
+- **[llama.cpp POWER8](https://github.com/Scottcjn/llama-cpp-power8)** 鈥?PSE vec_perm patches for IBM POWER8.
+- **[ShaprAI](https://github.com/Scottcjn/shaprai)** 鈥?Agent Sharpener.
+- **[Grazer](https://github.com/Scottcjn/grazer-skill)** 鈥?Multi-platform AI content discovery.
 
 ### Earn RTC
 
@@ -237,6 +237,12 @@ Check the [bounty board](https://github.com/Scottcjn/rustchain-bounties/issues) 
 
 ### Origin Story
 
-TrashClaw was born when our [Metal fix for discrete AMD GPUs](https://github.com/ggml-org/llama.cpp/pull/20615) was closed by llama.cpp maintainers without review. Instead of waiting for permission, we built our own agent around the hardware they rejected. The trashcan Mac Pro runs inference just fine — and now it has its own agent framework to prove it.
+TrashClaw was born when our [Metal fix for discrete AMD GPUs](https://github.com/ggml-org/llama.cpp/pull/20615) was closed by llama.cpp maintainers without review. Instead of waiting for permission, we built our own agent around the hardware they rejected. The trashcan Mac Pro runs inference just fine 鈥?and now it has its own agent framework to prove it.
 
 *Every CPU deserves a voice.*
+
+### 🦞 RustChain Bounty Hunter
+
+[![RustChain Contributor](https://img.shields.io/badge/RustChain-Contributor-blue)](https://github.com/Scottcjn/Rustchain)
+
+Proud contributor to the RustChain ecosystem!
