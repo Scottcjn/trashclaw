@@ -143,8 +143,7 @@ See `plugins/example_weather.py` for a complete example.
 See [WINDOWS_COMPATIBILITY.md](WINDOWS_COMPATIBILITY.md) for detailed setup.
 
 ```powershell
-pip install pyreadline3  # Required: enables readline history and tab completion
-pip install pyreadline3  # Required on Windows: enables readline support and command history
+pip install pyreadline3  # Required on Windows: enables readline history, tab completion, and command history
 python trashclaw.py
 ```
 
