@@ -12,6 +12,7 @@ Pure Python stdlib. Python 3.7+. Works with any OpenAI-compatible server.
 import os
 import sys
 import json
+import time
 import subprocess
 import urllib.request
 import urllib.error
@@ -43,6 +44,13 @@ MAX_OUTPUT_CHARS = 8000
 APPROVE_SHELL = os.environ.get("TRASHCLAW_AUTO_SHELL", "0") != "1"
 HISTORY: List[Dict] = []
 CWD = os.getcwd()
+
+# ── Session Stats ──
+SESSION_STATS = {
+    "total_tokens": 0,
+    "total_time": 0.0,
+    "total_turns": 0,
+}
 
 # ── Project Config (.trashclaw.toml) ──
 PROJECT_CONFIG = {
@@ -778,6 +786,8 @@ You are part of the Elyan Labs ecosystem. Current directory: {cwd}"""
 
 def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
     """Send request to llama-server and return the full response while streaming text."""
+    import time
+    
     payload = {
         "messages": messages,
         "temperature": 0.3,
@@ -798,6 +808,8 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
     full_content = ""
     tool_calls_dict = {}
     finish_reason = None
+    total_tokens = 0
+    start_time = time.time()
     
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
@@ -816,6 +828,8 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
                     if "content" in delta and delta["content"]:
                         content = delta["content"]
                         full_content += content
+                        # Count tokens (rough estimate: 4 chars per token)
+                        total_tokens += len(content) // 4
                         print(content, end="", flush=True)
                         
                     if "tool_calls" in delta and delta["tool_calls"]:
@@ -843,6 +857,18 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
         return {"error": f"Cannot reach llama-server: {e}"}
     except Exception as e:
         return {"error": f"LLM request failed: {e}"}
+    
+    # Calculate stats
+    elapsed_time = time.time() - start_time
+    tokens_per_sec = total_tokens / elapsed_time if elapsed_time > 0 else 0
+    
+    # Update session stats
+    SESSION_STATS["total_tokens"] += total_tokens
+    SESSION_STATS["total_time"] += elapsed_time
+    SESSION_STATS["total_turns"] += 1
+    
+    # Display generation stats
+    print(f"  \033[90m[{tokens_per_sec:.1f} tok/s | {total_tokens} tokens | {elapsed_time:.1f}s]\033[0m")
 
     tool_calls_list = [v for k, v in sorted(tool_calls_dict.items())] if tool_calls_dict else None
     
@@ -1086,6 +1112,15 @@ def handle_slash(cmd: str) -> bool:
         print(f"  Project: {detect_project_context()}")
         print(f"  Max rounds: {MAX_TOOL_ROUNDS}")
         print(f"  Shell approval: {'on' if APPROVE_SHELL else 'off'}")
+        
+        # Session stats
+        avg_tok_per_sec = SESSION_STATS["total_tokens"] / SESSION_STATS["total_time"] if SESSION_STATS["total_time"] > 0 else 0
+        print()
+        print(f"  \033[1mSession Stats:\033[0m")
+        print(f"    Total turns: {SESSION_STATS['total_turns']}")
+        print(f"    Total tokens: {SESSION_STATS['total_tokens']}")
+        print(f"    Total time: {SESSION_STATS['total_time']:.1f}s")
+        print(f"    Avg speed: {avg_tok_per_sec:.1f} tok/s")
 
     elif command == "/compact":
         # Keep only last 10 messages
