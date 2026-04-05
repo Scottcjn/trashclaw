@@ -1099,6 +1099,41 @@ def handle_slash(cmd: str) -> bool:
         result = tool_take_screenshot(region=arg if arg else None)
         print(f"  {result}")
 
+    elif command == "/pipe":
+        # Save last assistant response to file
+        import datetime
+        
+        # Find last assistant message
+        last_assistant_msg = None
+        for msg in reversed(HISTORY):
+            if msg.get("role") == "assistant":
+                last_assistant_msg = msg.get("content", "")
+                break
+        
+        if not last_assistant_msg:
+            print("  Error: No assistant response found in history")
+            return
+        
+        # Determine filename
+        if not arg:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"trashclaw_output_{timestamp}.txt"
+        else:
+            filename = arg
+        
+        # Resolve path
+        filepath = os.path.join(CWD, filename) if not os.path.isabs(filename) else filename
+        
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(last_assistant_msg)
+            
+            file_size = os.path.getsize(filepath)
+            print(f"  Saved to: {filepath}")
+            print(f"  Size: {file_size} bytes")
+        except Exception as e:
+            print(f"  Error saving file: {e}")
+
     elif command == "/img":
         # View an image file
         if not arg:
@@ -1198,6 +1233,10 @@ def handle_slash(cmd: str) -> bool:
   /save <name>   Save current conversation to session file
   /load <name>   Load conversation from session file
   /sessions      List all saved sessions
+  /pipe [file]   Save last assistant response to file
+  /img <path>    View an image file
+  /screenshot    Take a screenshot
+  /vision        Check if LLM supports vision models
   /exit          Exit TrashClaw
   /help          Show this help
 
