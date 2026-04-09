@@ -19,6 +19,7 @@ import re
 import glob as globlib
 import difflib
 import traceback
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -41,8 +42,34 @@ MODEL_NAME = os.environ.get("TRASHCLAW_MODEL", "local")
 MAX_TOOL_ROUNDS = int(os.environ.get("TRASHCLAW_MAX_ROUNDS", "15"))
 MAX_OUTPUT_CHARS = 8000
 APPROVE_SHELL = os.environ.get("TRASHCLAW_AUTO_SHELL", "0") != "1"
+
+# ── Image Helper ──
+def load_image_to_base64(image_path: str) -> Optional[str]:
+    """Load an image file and return base64 data URI."""
+    if not os.path.exists(image_path):
+        return None
+    
+    # Detect image type
+    ext = os.path.splitext(image_path)[1].lower()
+    mime_map = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+    }
+    mime_type = mime_map.get(ext, 'image/png')
+    
+    try:
+        with open(image_path, 'rb') as f:
+            image_data = base64.b64encode(f.read()).decode('utf-8')
+        return f"data:{mime_type};base64,{image_data}"
+    except Exception as e:
+        print(f"\033[31m[ERROR]\033[0m Failed to load image: {e}")
+        return None
 HISTORY: List[Dict] = []
 CWD = os.getcwd()
+IMAGE_PATH: Optional[str] = None  # Optional image path for vision models
 
 # ── Tool Definitions ──
 
@@ -813,7 +840,21 @@ def _try_parse_tool_calls_from_text(text: str) -> Optional[List[Dict]]:
 
 def agent_turn(user_message: str):
     """Run the full agent loop: LLM thinks, calls tools, observes, repeats."""
-    HISTORY.append({"role": "user", "content": user_message})
+    # Build user message content (with optional image)
+    if IMAGE_PATH:
+        image_data = load_image_to_base64(IMAGE_PATH)
+        if image_data:
+            # Vision model format: content can be a list of text + image
+            user_content = [
+                {"type": "text", "text": user_message},
+                {"type": "image_url", "image_url": {"url": image_data}}
+            ]
+        else:
+            user_content = user_message
+    else:
+        user_content = user_message
+    
+    HISTORY.append({"role": "user", "content": user_content})
 
     for round_num in range(MAX_TOOL_ROUNDS):
         # Build messages
@@ -1087,6 +1128,12 @@ def handle_slash(cmd: str) -> bool:
   /exit          Exit TrashClaw
   /help          Show this help
 
+  \033[1mCommand-line Options\033[0m
+  --image <path>   Analyze an image with vision models (png, jpg, gif, webp)
+  --url <url>      Set custom LLM server URL
+  --cwd <dir>      Set working directory
+  --auto-shell     Skip shell command approval prompts
+
   \033[1mEnvironment Variables\033[0m
   TRASHCLAW_URL        llama-server endpoint (default: http://localhost:8080)
   TRASHCLAW_MODEL      Model name for display
@@ -1104,6 +1151,7 @@ def handle_slash(cmd: str) -> bool:
 # ── Main ──
 
 def banner():
+    image_info = f" | Image: {IMAGE_PATH}" if IMAGE_PATH else ""
     print("""
 \033[36m ████████╗██████╗  █████╗ ███████╗██╗  ██╗ ██████╗██╗      █████╗ ██╗    ██╗
  ╚══██╔══╝██╔══██╗██╔══██╗██╔════╝██║  ██║██╔════╝██║     ██╔══██╗██║    ██║
@@ -1114,15 +1162,16 @@ def banner():
 
     \033[1mElyan Labs\033[0m | Mac Pro Trashcan Edition | v0.2
     General-purpose agent — files, commands, search, automation, anything local.
-    Model: {model} | CWD: {cwd}
+    Model: {model} | CWD: {cwd}{image}
     Type /help for commands, or just describe what you want to do.
-""".format(model=MODEL_NAME, cwd=CWD))
+    \033[90mUse --image <path> to analyze images with vision models\033[0m
+""".format(model=MODEL_NAME, cwd=CWD, image=image_info))
 
 
 def main():
-    global CWD
+    global CWD, IMAGE_PATH
 
-    # Parse --cwd argument
+    # Parse command-line arguments
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg == "--cwd" and i < len(sys.argv):
             CWD = os.path.abspath(sys.argv[i + 1])
@@ -1134,6 +1183,10 @@ def main():
             globals()["LLAMA_URL"] = arg.split("=", 1)[1]
         elif arg == "--auto-shell":
             globals()["APPROVE_SHELL"] = False
+        elif arg == "--image" and i < len(sys.argv):
+            IMAGE_PATH = sys.argv[i + 1]
+        elif arg.startswith("--image="):
+            IMAGE_PATH = arg.split("=", 1)[1]
 
     banner()
 
