@@ -24,6 +24,7 @@ Thank you for your interest in contributing to TrashClaw! This guide will help y
 ```bash
 # Clone the repository
 git clone https://github.com/YOUR_USERNAME/trashclaw.git
+# Replace YOUR_USERNAME with your actual GitHub username
 cd trashclaw
 
 # Start your local LLM server (example with Ollama)
