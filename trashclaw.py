@@ -2049,32 +2049,34 @@ def handle_slash(cmd: str) -> bool:
             # Generate filename if not provided
             if not arg:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"response_{timestamp}.md"
+                filename = os.path.join(CWD, f"response_{timestamp}.md")
             else:
-                filename = arg
-            
+                filename = _resolve_path(arg)
+
             # Ensure output directory exists
-            output_dir = os.path.dirname(filename) or '.'
+            output_dir = os.path.dirname(filename) or CWD
             os.makedirs(output_dir, exist_ok=True)
-            
+
             # Save to file
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(LAST_ASSISTANT_RESPONSE)
-                
+
                 # Get file size
                 file_size = os.path.getsize(filename)
-                # Format file size
+                display_size = float(file_size)
+                file_size_str = f"{display_size:.2f} TB"
                 for unit in ['B', 'KB', 'MB', 'GB']:
-                    if file_size < 1024.0:
-                        file_size_str = f"{file_size:.2f} {unit}"
+                    if display_size < 1024.0:
+                        file_size_str = f"{display_size:.2f} {unit}"
                         break
-                    file_size /= 1024.0
-                
+                    display_size /= 1024.0
+
                 # Get absolute path
                 abs_path = os.path.abspath(filename)
-                
-                print(f"  ✅ Saved to `{filename}`")
+                rel_display = os.path.relpath(abs_path, CWD)
+
+                print(f"  ✅ Saved to `{rel_display}`")
                 print(f"  📁 Path: `{abs_path}`")
                 print(f"  📊 Size: `{file_size_str}`")
             except Exception as e:
