@@ -1697,7 +1697,7 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
         if token_count > 0:
             elapsed_display = time.time() - start_time
             tokens_per_sec = token_count / elapsed_display if elapsed_display > 0 else 0
-            print(f"  [Generation: {tokens_per_sec:.1f} tok/s | {token_count} tokens | {elapsed_display:.1f}s]")
+            print(f"\n  \033[36m[{tokens_per_sec:.1f} tok/s | {token_count} tokens | {elapsed_display:.1f}s]\033[0m")
     except urllib.error.URLError as e:
         return {"error": f"Cannot reach llama-server: {e}"}
     except Exception as e:
@@ -2006,7 +2006,7 @@ def handle_slash(cmd: str) -> bool:
         else:
             print(f"  Error: {new_dir} not found")
 
-    elif command == "/status":
+    elif command in ("/status", "/stats"):
         try:
             req = urllib.request.Request(f"{LLAMA_URL}/health")
             with urllib.request.urlopen(req, timeout=5) as resp:
