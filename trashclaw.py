@@ -140,13 +140,17 @@ def _load_context_files(cfg: Dict, cwd: str = None) -> str:
 
     Reads ``context_files = ["src/main.py", "README.md"]`` from the project
     config and returns their contents formatted for the system prompt.
+    
+    Also auto-loads ``.trashclaw.md`` from the project root if present.
     """
     context_files = cfg.get("context_files", [])
     if not context_files or not isinstance(context_files, list):
-        return ""
-
+        context_files = []
+    
     target_cwd = cwd or os.getcwd()
     parts = []
+    
+    # Load specified context files
     for rel_path in context_files:
         abs_path = os.path.join(target_cwd, str(rel_path))
         if os.path.exists(abs_path) and os.path.isfile(abs_path):
@@ -156,6 +160,17 @@ def _load_context_files(cfg: Dict, cwd: str = None) -> str:
                 parts.append(f"\n--- Context: {rel_path} ---\n{content}")
             except Exception:
                 pass
+    
+    # Auto-load .trashclaw.md from project root
+    trashclaw_md = os.path.join(target_cwd, ".trashclaw.md")
+    if os.path.exists(trashclaw_md):
+        try:
+            with open(trashclaw_md, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(16000)  # Cap at 16KB for markdown
+            parts.append(f"\n--- Project Context (.trashclaw.md) ---\n{content}")
+        except Exception:
+            pass
+    
     return "".join(parts)
 
 # Initial load with default CWD

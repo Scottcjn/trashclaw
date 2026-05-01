@@ -1,0 +1,27 @@
+# TrashClaw Project Configuration
+# Place this file in your project root to auto-configure TrashClaw
+
+# Files to load into context on startup
+context_files = [
+    "src/main.py",
+    "README.md",
+    "docs/architecture.md"
+]
+
+# Custom system prompt for this project
+system_prompt = "You are a Rust expert specializing in async programming and memory safety."
+
+# Model to use (overrides default)
+model = "codestral"
+
+# Auto-approve shell commands (1 = true, 0 = false)
+auto_shell = 0
+
+# Maximum conversation rounds
+max_rounds = 20
+
+# Maximum context messages
+max_context = 100
+
+# LLM server URL (overrides default)
+url = "http://localhost:8080"
