@@ -102,7 +102,9 @@ def run(path: str = ".", top_n: int = 10, **kwargs) -> str:
             filepath = os.path.join(root, fname)
             _, ext = os.path.splitext(fname)
 
-            if ext in SKIP_EXTENSIONS:
+            if ext in SKIP_EXTENSIONS or any(
+                fname.endswith(skip_ext) for skip_ext in SKIP_EXTENSIONS
+            ):
                 continue
 
             lang = LANG_MAP.get(ext)
