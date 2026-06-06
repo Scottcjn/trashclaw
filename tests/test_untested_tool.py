@@ -5,6 +5,7 @@ Tests for hash, base64, and json_format plugins.
 import sys
 import os
 import json
+import unittest
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))

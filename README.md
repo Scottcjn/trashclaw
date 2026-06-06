@@ -133,6 +133,7 @@ See `plugins/example_weather.py` for a complete example.
 - **Retry logic**: Auto-retries on LLM connection failure
 - **Undo**: `/undo` rolls back file changes
 - **Non-interactive**: `--exec "prompt"` or pipe via stdin
+- **Read-only audits**: `--read-only` or `TRASHCLAW_READONLY=1` blocks write, shell, commit, and clipboard-copy tools for safe first runs
 - **Achievements**: 10 milestones tracked persistently
 - **Hardware detection**: Detects and displays system info — supports vintage hardware (PowerPC G4/G5, IBM POWER8, Mac Pro Trashcan)
 
@@ -183,6 +184,7 @@ TRASHCLAW_URL=http://localhost:1234/v1 python3 trashclaw.py
 | `TRASHCLAW_MAX_ROUNDS` | `15` | Max tool rounds per task |
 | `TRASHCLAW_MAX_CONTEXT` | `80` | Max conversation messages |
 | `TRASHCLAW_AUTO_SHELL` | `0` | Set `1` to auto-approve commands |
+| `TRASHCLAW_READONLY` | `0` | Set `1` to hide and block side-effecting tools |
 
 ### Config File
 
@@ -194,6 +196,7 @@ TRASHCLAW_URL=http://localhost:1234/v1 python3 trashclaw.py
 python3 trashclaw.py --cwd ~/project     # Set working directory
 python3 trashclaw.py --url http://...     # Set LLM endpoint
 python3 trashclaw.py --auto-shell         # Skip command approval
+python3 trashclaw.py --read-only          # Audit without file writes or shell commands
 python3 trashclaw.py --system "You are a Rust expert"  # Custom instructions
 python3 trashclaw.py -e "fix the linting errors"       # One-shot mode
 echo "deploy to staging" | python3 trashclaw.py         # Pipe mode

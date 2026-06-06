@@ -262,6 +262,33 @@ class TestGitCommit:
 
 # ── tab completion ──
 
+class TestReadOnlyMode:
+    def test_available_tools_hides_side_effecting_tools(self, monkeypatch):
+        monkeypatch.setattr(trashclaw, "READ_ONLY_MODE", True)
+        names = {tool["function"]["name"] for tool in trashclaw._available_tools()}
+        assert "read_file" in names
+        assert "search_files" in names
+        assert "git_diff" in names
+        assert "write_file" not in names
+        assert "edit_file" not in names
+        assert "patch_file" not in names
+        assert "run_command" not in names
+        assert "git_commit" not in names
+
+    def test_read_only_blocks_write_and_shell(self, monkeypatch):
+        monkeypatch.setattr(trashclaw, "READ_ONLY_MODE", True)
+        assert trashclaw._read_only_blocked("write_file", {})
+        assert trashclaw._read_only_blocked("run_command", {})
+        assert trashclaw._read_only_blocked("git_commit", {})
+        assert not trashclaw._read_only_blocked("read_file", {})
+        assert not trashclaw._read_only_blocked("git_status", {})
+
+    def test_read_only_allows_only_clipboard_paste(self, monkeypatch):
+        monkeypatch.setattr(trashclaw, "READ_ONLY_MODE", True)
+        assert not trashclaw._read_only_blocked("clipboard", {"action": "paste"})
+        assert trashclaw._read_only_blocked("clipboard", {"action": "copy"})
+
+
 class TestTabCompletion:
     def test_setup_tab_completion_runs(self):
         try:

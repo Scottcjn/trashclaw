@@ -114,7 +114,7 @@ def _load_config(cwd: str = None) -> Dict:
 def _apply_config(cfg: Dict):
     """Apply config dict to global variables."""
     global LLAMA_URL, MODEL_NAME, MAX_TOOL_ROUNDS, MAX_CONTEXT_MESSAGES
-    global AUTO_COMPACT_THRESHOLD, APPROVE_SHELL, EXTRA_SYSTEM_PROMPT
+    global AUTO_COMPACT_THRESHOLD, APPROVE_SHELL, EXTRA_SYSTEM_PROMPT, READ_ONLY_MODE
     
     def _c(key: str, env_key: str, default: Any) -> Any:
         val = os.environ.get(env_key, cfg.get(key, default))
@@ -129,6 +129,7 @@ def _apply_config(cfg: Dict):
     MAX_CONTEXT_MESSAGES = _c("max_context", "TRASHCLAW_MAX_CONTEXT", 80)
     AUTO_COMPACT_THRESHOLD = MAX_CONTEXT_MESSAGES + 20
     APPROVE_SHELL = _c("auto_shell", "TRASHCLAW_AUTO_SHELL", "0") != "1"
+    READ_ONLY_MODE = str(_c("read_only", "TRASHCLAW_READONLY", "0")).lower() in ("1", "true", "yes", "on")
 
     # Project-level system prompt override from .trashclaw.toml
     if "system_prompt" in cfg and cfg["system_prompt"]:
@@ -184,6 +185,7 @@ HISTORY: List[Dict] = []
 UNDO_STACK: List[Dict] = []  # [{path, content_before, action}]
 APPROVED_COMMANDS: set = set()
 EXTRA_SYSTEM_PROMPT: str = ""
+READ_ONLY_MODE: bool = globals().get("READ_ONLY_MODE", False)
 LAST_ASSISTANT_RESPONSE: str = ""  # For /pipe command
 LAST_GENERATION_STATS: Dict = {}  # {tokens, seconds, tokens_per_sec} for /stats
 SESSION_STATS: Dict = {"total_tokens": 0, "total_seconds": 0.0, "turns": 0}  # Cumulative session stats
@@ -324,6 +326,45 @@ def _track_tool(tool_name: str):
     _save_achievements(ACHIEVEMENTS)
 CWD = os.getcwd()
 _INTERRUPTED = False
+
+READ_ONLY_ALLOWED_TOOLS = {
+    "read_file", "search_files", "find_files", "list_dir", "fetch_url",
+    "think", "git_status", "git_diff", "view_image", "word_count",
+    "base64", "clipboard",
+}
+
+def _available_tools() -> List[Dict]:
+    """Return the tool schema list visible to the model for the current mode."""
+    if not READ_ONLY_MODE:
+        return TOOLS
+    allowed = []
+    for tool in TOOLS:
+        name = tool.get("function", {}).get("name", "")
+        if name in READ_ONLY_ALLOWED_TOOLS and name not in READ_ONLY_BLOCKED_TOOLS:
+            allowed.append(tool)
+    return allowed
+READ_ONLY_BLOCKED_TOOLS = {
+    "write_file", "edit_file", "patch_file", "run_command", "git_commit",
+}
+
+def _read_only_blocked(tool_name: str, args: Dict = None) -> bool:
+    """Return true when a tool call would create side effects in read-only mode."""
+    if not READ_ONLY_MODE:
+        return False
+    args = args or {}
+    if tool_name in READ_ONLY_BLOCKED_TOOLS:
+        return True
+    if tool_name == "clipboard" and args.get("action", "paste") != "paste":
+        return True
+    return tool_name not in READ_ONLY_ALLOWED_TOOLS
+
+def _read_only_message(tool_name: str) -> str:
+    return (
+        f"Read-only mode blocked tool '{tool_name}'. "
+        "Allowed tools: read_file, search_files, find_files, list_dir, "
+        "fetch_url, think, git_status, git_diff, view_image, word_count, "
+        "base64, and clipboard paste."
+    )
 
 # ── Tool Definitions ──
 
@@ -1403,6 +1444,9 @@ def _load_plugins():
             name = tool_def.get("name", fname[:-3])
             if name in TOOL_DISPATCH:
                 continue  # Don't override built-in tools
+            if READ_ONLY_MODE:
+                print(f"  \033[90m[plugin skipped: read-only]\033[0m {name}")
+                continue
 
             # Register the tool
             TOOLS.append({
@@ -1839,6 +1883,13 @@ def _agent_loop(round_limit: int):
         )
         if EXTRA_SYSTEM_PROMPT:
             sys_prompt += f"\n\n--- Custom Instructions ---\n{EXTRA_SYSTEM_PROMPT}"
+        if READ_ONLY_MODE:
+            sys_prompt += (
+                "\n\n--- Read-only mode ---\n"
+                "You are auditing only. Do not write files, patch files, run shell commands, "
+                "commit changes, or copy to the clipboard. Use read/search/list/fetch/git diff "
+                "tools and propose a patch plan instead."
+            )
         messages = [{"role": "system", "content": sys_prompt}]
         # Keep recent context within bounds
         messages.extend(HISTORY[-MAX_CONTEXT_MESSAGES:])
@@ -1848,7 +1899,7 @@ def _agent_loop(round_limit: int):
         print(f"{indicator}\033[90mthinking...\033[0m", end="", flush=True)
 
         # Call LLM (with retry on connection failure)
-        response = llm_request_with_retry(messages, tools=TOOLS)
+        response = llm_request_with_retry(messages, tools=_available_tools())
 
         # Clear thinking indicator
         print(f"\r{' ' * 60}\r", end="")
@@ -1961,8 +2012,11 @@ def _agent_loop(round_limit: int):
             handler = TOOL_DISPATCH.get(tool_name)
             if handler:
                 try:
-                    result = handler(args)
-                    _track_tool(tool_name)
+                    if _read_only_blocked(tool_name, args):
+                        result = _read_only_message(tool_name)
+                    else:
+                        result = handler(args)
+                        _track_tool(tool_name)
                 except Exception as e:
                     result = f"Error executing {tool_name}: {e}\n{traceback.format_exc()}"
             else:
@@ -2586,6 +2640,7 @@ def handle_slash(cmd: str) -> bool:
   --cwd <dir>    Set working directory
   --url <url>    Set LLM server URL
   --auto-shell   Skip shell command approval
+  --read-only    Audit mode: hide and block write/shell/commit/clipboard-copy tools
   -e, --exec "prompt"  Run one prompt and exit (non-interactive)
   --system "text" Inject custom instructions into system prompt
   --watch "*.py" "run tests"  Watch files, run prompt on change
@@ -2597,6 +2652,7 @@ def handle_slash(cmd: str) -> bool:
   TRASHCLAW_MAX_ROUNDS  Max tool rounds per turn (default: 15)
   TRASHCLAW_MAX_CONTEXT Max conversation messages (default: 80)
   TRASHCLAW_AUTO_SHELL  Set to 1 to skip shell approval
+  TRASHCLAW_READONLY    Set to 1 to block side-effecting tools
 
   \033[1mFeatures\033[0m
   Tab completion for slash commands and file paths.
@@ -2637,6 +2693,8 @@ def banner():
 """)
     print(f"    \033[1mElyan Labs\033[0m | v{VERSION} | \033[90m\"{quote}\"\033[0m")
     print(f"    Running on: \033[36m{hw_label}\033[0m | Model: {MODEL_NAME} | CWD: {CWD}")
+    if READ_ONLY_MODE:
+        print("    Mode: \033[33mread-only\033[0m | write/shell/commit tools blocked")
     if achievements_count > 0:
         print(f"    Achievements: {achievements_count}/{total_achievements} unlocked")
     print(f"    Type /help for commands, /about for the manifesto.\n")
@@ -2709,6 +2767,8 @@ def main():
             globals()["LLAMA_URL"] = args[i].split("=", 1)[1]; i += 1
         elif args[i] == "--auto-shell":
             globals()["APPROVE_SHELL"] = False; i += 1
+        elif args[i] == "--read-only":
+            globals()["READ_ONLY_MODE"] = True; i += 1
         elif args[i] in ("-e", "--exec") and i + 1 < len(args):
             one_shot = args[i + 1]; i += 2
         elif args[i] == "--system" and i + 1 < len(args):
