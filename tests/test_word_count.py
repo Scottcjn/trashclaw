@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the word_count plugin."""
 
 import os

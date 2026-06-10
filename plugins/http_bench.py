@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 HTTP Bench Plugin for TrashClaw
 

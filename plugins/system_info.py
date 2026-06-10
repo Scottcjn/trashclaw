@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 System Info Plugin for TrashClaw
 

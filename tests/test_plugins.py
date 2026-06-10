@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for new TrashClaw plugins: markdown_table, text_diff, timer."""
 import sys
 import os

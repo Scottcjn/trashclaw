@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Tests for hash, base64, and json_format plugins.
 """

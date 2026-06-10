@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # Wrapper script to run llama-server across dual AMD FirePro D500 GPUs on the 2013 Mac Pro
 # Uses the RPC backend to split layers across the two GPUs (3GB VRAM each).
 # Requires llama-rpc-server and llama-server to be built with RPC support.

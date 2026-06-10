@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Cert Check Plugin for TrashClaw
 

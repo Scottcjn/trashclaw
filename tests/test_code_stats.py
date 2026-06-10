@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the code_stats plugin."""
 
 import os

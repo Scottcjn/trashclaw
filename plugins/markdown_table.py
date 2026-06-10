@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 TrashClaw Plugin — Markdown Table Formatter
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Regex Test Plugin for TrashClaw
 

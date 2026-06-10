@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for Metal GPU detection and status.
 
 Uses only pytest + stdlib.

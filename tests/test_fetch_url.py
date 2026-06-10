@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Tests for tool_fetch_url and tool_think.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Env Audit Plugin for TrashClaw
 

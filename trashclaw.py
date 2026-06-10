@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """
 TrashClaw v0.7.1 — Local Tool-Use Agent
 ======================================

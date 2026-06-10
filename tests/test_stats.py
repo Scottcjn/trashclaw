@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for generation stats and session stats tracking.
 
 Covers:

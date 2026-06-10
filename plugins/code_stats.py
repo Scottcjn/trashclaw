@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Code Stats Plugin for TrashClaw
 

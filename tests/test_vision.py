@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for vision support: view_image tool, PENDING_IMAGE, vision detection.
 
 Covers:

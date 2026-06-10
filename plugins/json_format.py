@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 JSON Format Plugin for TrashClaw
 

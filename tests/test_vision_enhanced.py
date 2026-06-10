@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Enhanced tests for vision features (view_image, screenshot, vision detection).
 
 Uses only pytest + stdlib. All file operations use tmp directories.

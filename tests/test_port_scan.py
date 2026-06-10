@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the port_scan plugin."""
 
 import os

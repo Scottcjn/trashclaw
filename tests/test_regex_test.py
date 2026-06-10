@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the regex_test plugin."""
 
 import os

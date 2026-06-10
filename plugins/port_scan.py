@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Port Scan Plugin for TrashClaw
 

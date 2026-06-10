@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for TrashClaw core tool functions.
 
 Uses only pytest + stdlib. All file operations use tmp directories.

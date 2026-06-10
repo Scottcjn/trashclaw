@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Word Count Plugin for TrashClaw
 

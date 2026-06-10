@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the timestamp plugin."""
 
 import os

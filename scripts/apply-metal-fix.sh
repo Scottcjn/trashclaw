@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # apply-metal-fix.sh - Apply StorageModeManaged fix for discrete AMD GPUs
 # Reference: https://github.com/ggml-org/llama.cpp/pull/20615
 #

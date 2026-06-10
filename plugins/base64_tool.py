@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Base64 Plugin for TrashClaw
 

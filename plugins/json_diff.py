@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 JSON Diff Plugin for TrashClaw
 

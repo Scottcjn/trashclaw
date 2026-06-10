@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for word_count and base64 built-in tools.
 
 Uses only pytest + stdlib. All file operations use tmp directories.

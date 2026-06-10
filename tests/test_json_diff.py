@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the json_diff plugin."""
 
 import json

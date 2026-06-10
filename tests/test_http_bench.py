@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the http_bench plugin."""
 
 import http.server
