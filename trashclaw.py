@@ -1317,9 +1317,12 @@ def _check_vision_support() -> bool:
         return VISION_SUPPORTED
 
     # Known vision-capable model name patterns
-    vision_keywords = ["llava", "qwen-vl", "qwen2-vl", "bakllava", "obsidian",
-                       "minicpm-v", "cogvlm", "internvl", "vision", "vl-",
-                       "gemini", "gpt-4o", "gpt-4-vision", "claude"]
+    vision_keywords = ["llava", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "bakllava", "obsidian",
+                       "minicpm-v", "cogvlm", "internvl", "internlm-xcomposer",
+                       "vision", "vl-", "gemini", "gemini-2.0", "gpt-4o", "gpt-4-vision",
+                       "gpt-4.1", "claude", "claude-3", "phi-3-vision", "phi-4-vision",
+                       "pixtral", "llama-3.2-vision", "llama-4-vision", "molmo",
+                       "paligemma", "fuyu", "idefics", "kosmos-2", "cambrian"]
 
     model_lower = MODEL_NAME.lower()
     for kw in vision_keywords:
@@ -2103,6 +2106,11 @@ def handle_slash(cmd: str) -> bool:
         if LAST_GENERATION_STATS:
             g = LAST_GENERATION_STATS
             print(f"  Last generation: {g['tokens_per_sec']:.1f} tok/s | {g['tokens']} tokens | {g['seconds']:.1f}s")
+        # Check if model supports vision
+        if _check_vision_support():
+            print(f"  Vision: \033[32m✓ supported\033[0m")
+        else:
+            print(f"  Vision: \033[90mnot detected\033[0m (use /image or /screenshot to try anyway)")
 
     elif command == "/compact":
         # Keep only last 10 messages
@@ -2644,6 +2652,8 @@ def handle_slash(cmd: str) -> bool:
   --read-only    Audit mode: hide and block write/shell/commit/clipboard-copy tools
   -e, --exec "prompt"  Run one prompt and exit (non-interactive)
   --system "text" Inject custom instructions into system prompt
+  --image <path> Load an image before the first prompt (vision models)
+  --screenshot   Take a screenshot before the first prompt (vision models)
   --watch "*.py" "run tests"  Watch files, run prompt on change
   --version      Show version
 
@@ -2774,6 +2784,33 @@ def main():
             one_shot = args[i + 1]; i += 2
         elif args[i] == "--system" and i + 1 < len(args):
             globals()["EXTRA_SYSTEM_PROMPT"] = args[i + 1]; i += 2
+        elif args[i] == "--image" and i + 1 < len(args):
+            # Load an image for the session
+            import base64 as _b64
+            img_path = os.path.abspath(args[i + 1])
+            if os.path.exists(img_path):
+                with open(img_path, "rb") as _f:
+                    _img_data = _b64.b64encode(_f.read()).decode("utf-8")
+                globals()["PENDING_IMAGE"] = {"path": img_path, "base64": _img_data, "media_type": "image/png"}
+                print(f"    Image loaded: {img_path}")
+            else:
+                print(f"    Error: Image not found: {img_path}")
+            i += 2
+        elif args[i] == "--screenshot":
+            import base64 as _b64
+            _ss_path = "/tmp/trashclaw_screenshot.png"
+            if sys.platform == "darwin":
+                subprocess.run(["screencapture", "-x", _ss_path], capture_output=True, timeout=10)
+            if os.path.exists(_ss_path):
+                with open(_ss_path, "rb") as _f:
+                    _img_data = _b64.b64encode(_f.read()).decode("utf-8")
+                globals()["PENDING_IMAGE"] = {"path": _ss_path, "base64": _img_data, "media_type": "image/png"}
+                print(f"    Screenshot taken")
+                try: os.remove(_ss_path)
+                except: pass
+            else:
+                print(f"    Error: Could not take screenshot")
+            i += 1
         elif args[i] == "--watch" and i + 2 < len(args):
             _watch_mode(args[i + 1], args[i + 2]); sys.exit(0)
         elif args[i] == "--version":
