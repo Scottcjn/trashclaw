@@ -2752,28 +2752,42 @@ def main():
     # Parse arguments
     one_shot = None
     args = sys.argv[1:]
+
+    # A later --cwd reloads config, which rewrites these globals from the
+    # config/env defaults. Remember what the flags asked for and re-apply it
+    # after every reload, so flag order on the command line doesn't matter.
+    cli_overrides: Dict[str, Any] = {}
+
+    def _cli_set(name: str, value: Any):
+        cli_overrides[name] = value
+        globals()[name] = value
+
+    def _reload_config(new_cwd: str):
+        _apply_config(_load_config(new_cwd))
+        globals().update(cli_overrides)
+
     i = 0
     while i < len(args):
         if args[i] == "--cwd" and i + 1 < len(args):
             CWD = os.path.abspath(args[i + 1]); i += 2
             # Reload config from new CWD
-            _apply_config(_load_config(CWD))
+            _reload_config(CWD)
         elif args[i].startswith("--cwd="):
             CWD = os.path.abspath(args[i].split("=", 1)[1]); i += 1
             # Reload config from new CWD
-            _apply_config(_load_config(CWD))
+            _reload_config(CWD)
         elif args[i] == "--url" and i + 1 < len(args):
-            globals()["LLAMA_URL"] = args[i + 1]; i += 2
+            _cli_set("LLAMA_URL", args[i + 1]); i += 2
         elif args[i].startswith("--url="):
-            globals()["LLAMA_URL"] = args[i].split("=", 1)[1]; i += 1
+            _cli_set("LLAMA_URL", args[i].split("=", 1)[1]); i += 1
         elif args[i] == "--auto-shell":
-            globals()["APPROVE_SHELL"] = False; i += 1
+            _cli_set("APPROVE_SHELL", False); i += 1
         elif args[i] == "--read-only":
-            globals()["READ_ONLY_MODE"] = True; i += 1
+            _cli_set("READ_ONLY_MODE", True); i += 1
         elif args[i] in ("-e", "--exec") and i + 1 < len(args):
             one_shot = args[i + 1]; i += 2
         elif args[i] == "--system" and i + 1 < len(args):
-            globals()["EXTRA_SYSTEM_PROMPT"] = args[i + 1]; i += 2
+            _cli_set("EXTRA_SYSTEM_PROMPT", args[i + 1]); i += 2
         elif args[i] == "--watch" and i + 2 < len(args):
             _watch_mode(args[i + 1], args[i + 2]); sys.exit(0)
         elif args[i] == "--version":
