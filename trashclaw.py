@@ -2165,11 +2165,6 @@ def handle_slash(cmd: str) -> bool:
         if gpu_info["gpu_type"] != "unknown":
             metal_status = "✓" if gpu_info["metal_supported"] else "✗"
             print(f"  GPU: {gpu_info['gpu_name']} ({gpu_info['gpu_type']}) | Metal: {metal_status}")
-            print(f"  Session stats: {s['total_tokens']} tokens | {s['turns']} turns | {s['total_seconds']:.1f}s total")
-            print(f"  Average speed: {avg_tps:.1f} tok/s")
-        if LAST_GENERATION_STATS:
-            g = LAST_GENERATION_STATS
-            print(f"  Last generation: {g['tokens_per_sec']:.1f} tok/s | {g['tokens']} tokens | {g['seconds']:.1f}s")
 
     elif command == "/compact":
         # Keep only last 10 messages
