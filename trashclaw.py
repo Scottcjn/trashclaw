@@ -923,13 +923,26 @@ def tool_edit_file(path: str, old_string: str, new_string: str) -> str:
     return f"Edited {path} (1 replacement)\n{diff_str}"
 
 
+# Characters that let a shell run more than the first command (chaining,
+# pipes, substitution, redirection, subshells). Commands containing any of
+# these are never auto-approved by an "always" answer.
+_SHELL_METACHARS = set(";&|$`<>()\n\r")
+
+
+def _has_shell_metachars(command: str) -> bool:
+    """Return True if command contains shell control/substitution characters."""
+    return any(ch in _SHELL_METACHARS for ch in command)
+
+
 def tool_run_command(command: str, timeout: int = 30) -> str:
     """Execute a shell command with optional approval. Handles 'cd' specially."""
     global CWD
     if APPROVE_SHELL:
         # Check if command prefix is pre-approved
         cmd_prefix = command.strip().split()[0] if command.strip() else ""
-        if cmd_prefix not in APPROVED_COMMANDS:
+        # "always" approval covers a single simple command only: anything that
+        # could chain or substitute further commands must be confirmed.
+        if cmd_prefix not in APPROVED_COMMANDS or _has_shell_metachars(command):
             try:
                 answer = input(f"  \033[33mRun:\033[0m {command} \033[90m[y/N/a(lways)]\033[0m ").strip().lower()
             except EOFError:

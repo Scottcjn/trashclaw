@@ -112,6 +112,48 @@ class TestRunCommand:
         assert isinstance(result, str)
 
 
+class TestRunCommandAlwaysApprove:
+    """An "always" approval must not cover chained/substituted commands."""
+
+    @pytest.fixture
+    def prompts(self, monkeypatch, tmp_path):
+        asked = []
+
+        def fake_input(prompt=""):
+            asked.append(prompt)
+            return "n"
+
+        monkeypatch.setattr(trashclaw, "APPROVE_SHELL", True)
+        monkeypatch.setattr(trashclaw, "APPROVED_COMMANDS", {"echo"})
+        monkeypatch.setattr("builtins.input", fake_input)
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+        return asked
+
+    def test_simple_approved_command_runs_without_prompt(self, prompts):
+        result = trashclaw.tool_run_command("echo approved_ok")
+        assert "approved_ok" in result
+        assert prompts == []
+
+    @pytest.mark.parametrize("command", [
+        "echo hi && echo pwned",
+        "echo hi; echo pwned",
+        "echo hi || echo pwned",
+        "echo hi | cat",
+        "echo hi & echo pwned",
+        "echo $(echo pwned)",
+        "echo `echo pwned`",
+        "echo ${HOME}",
+        "echo hi > out.txt",
+        "echo hi < in.txt",
+        "echo hi\necho pwned",
+        "echo (hi)",
+    ])
+    def test_metachar_command_still_prompts(self, prompts, command):
+        result = trashclaw.tool_run_command(command)
+        assert len(prompts) == 1
+        assert result == "Command cancelled by user."
+
+
 # ── tool_search_files ──
 
 class TestSearchFiles:
