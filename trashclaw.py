@@ -1545,28 +1545,44 @@ def _detect_gpu_info() -> Dict:
         if result.returncode != 0:
             return {"gpu_type": "unknown", "gpu_name": "Unknown", "metal_supported": False}
         
-        output = result.stdout.lower()
-        
+        output = result.stdout
+
         # Detect discrete GPUs (AMD FirePro, AMD Radeon Pro, NVIDIA)
         discrete_keywords = ["firepro", "radeon pro", "amd radeon", "nvidia"]
         # Detect integrated GPUs (Intel Iris, Intel HD)
         integrated_keywords = ["intel iris", "intel hd", "intel uhd"]
-        
+
+        def _classify(name: str) -> str:
+            lowered = name.lower()
+            if any(kw in lowered for kw in discrete_keywords):
+                return "discrete"
+            if any(kw in lowered for kw in integrated_keywords):
+                return "integrated"
+            return "unknown"
+
+        # Prefer the "Chipset Model: <name>" lines; fall back to any line
+        # (e.g. the "AMD FirePro D500:" section header). Names keep their
+        # original case, and only the text after the first ":" of a
+        # "key: value" line is used.
+        candidates = []
+        for line in output.split('\n'):
+            stripped = line.strip()
+            if stripped.lower().startswith("chipset model:"):
+                candidates.append(stripped.split(":", 1)[1].strip())
+        if not candidates:
+            candidates = [line.strip().rstrip(":").strip() for line in output.split('\n')]
+
         gpu_name = "Unknown"
         gpu_type = "unknown"
-        
-        for line in output.split('\n'):
-            if any(kw in line for kw in discrete_keywords):
-                gpu_type = "discrete"
-                # Extract GPU name
-                if ":" in line:
-                    gpu_name = line.split(":")[1].strip()
+
+        for name in candidates:
+            kind = _classify(name)
+            if kind == "discrete":
+                gpu_type, gpu_name = kind, name
                 break
-            elif any(kw in line for kw in integrated_keywords):
-                gpu_type = "integrated"
-                if ":" in line:
-                    gpu_name = line.split(":")[1].strip()
-        
+            if kind == "integrated" and gpu_type == "unknown":
+                gpu_type, gpu_name = kind, name
+
         # Metal is supported on macOS 10.15+ with Metal-capable GPU
         # All discrete GPUs from 2013+ support Metal
         metal_supported = gpu_type != "unknown"
