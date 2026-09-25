@@ -193,9 +193,20 @@ def _load_context_files(cfg: Dict, cwd: str = None) -> str:
     target_cwd = cwd or os.getcwd()
     parts = []
     
-    # Load specified context files
+    # Load specified context files. They come from the (untrusted) project
+    # config, so only files inside the project directory are allowed:
+    # absolute paths and ../ escapes could pull in ~/.ssh keys and the like.
+    root = os.path.realpath(target_cwd)
     for rel_path in context_files:
-        abs_path = os.path.join(target_cwd, str(rel_path))
+        abs_path = os.path.realpath(os.path.join(target_cwd, str(rel_path)))
+        try:
+            inside = os.path.commonpath([root, abs_path]) == root
+        except ValueError:  # different drives on Windows
+            inside = False
+        if not inside:
+            print(f"  [trashclaw] ignoring context file outside the project: {rel_path}",
+                  file=sys.stderr)
+            continue
         if os.path.exists(abs_path) and os.path.isfile(abs_path):
             try:
                 with open(abs_path, "r", encoding="utf-8", errors="replace") as f:

@@ -92,3 +92,18 @@ def test_env_var_still_controls_auto_shell(home_cfg, monkeypatch):
     monkeypatch.setenv("TRASHCLAW_AUTO_SHELL", "1")
     trashclaw._apply_config(trashclaw._load_config(str(home_cfg)))
     assert trashclaw.APPROVE_SHELL is False
+
+
+def test_context_files_cannot_escape_project(tmp_path):
+    """context_files from project config may only name files inside the project."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "notes.md").write_text("PROJECT NOTES")
+    secret = tmp_path / "id_rsa"
+    secret.write_text("SECRET KEY")
+
+    cfg = {"context_files": ["notes.md", str(secret), "../id_rsa"]}
+    loaded = trashclaw._load_context_files(cfg, cwd=str(project))
+
+    assert "PROJECT NOTES" in loaded
+    assert "SECRET KEY" not in loaded
