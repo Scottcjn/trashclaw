@@ -1329,7 +1329,7 @@ def _check_vision_support() -> bool:
 
     # Try /v1/models endpoint for multimodal info
     try:
-        req = urllib.request.Request(f"{LLAMA_URL}/v1/models")
+        req = urllib.request.Request(_api_url("/models"))
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             for m in data.get("data", []):
@@ -1652,6 +1652,19 @@ BOUDREAUX COMPUTING PRINCIPLES:
 {project_instructions}"""
 
 
+def _server_base_url() -> str:
+    """Return LLAMA_URL as a bare server base URL (no trailing slash or /v1)."""
+    base = LLAMA_URL.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base
+
+
+def _api_url(path: str) -> str:
+    """Build an OpenAI-compatible endpoint URL, e.g. _api_url("/chat/completions")."""
+    return f"{_server_base_url()}/v1{path}"
+
+
 def llm_request_with_retry(messages: List[Dict], tools: List[Dict] = None) -> Dict:
     """Call llm_request with retry on connection failure."""
     for attempt in range(LLM_RETRY_ATTEMPTS + 1):
@@ -1683,7 +1696,7 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"{LLAMA_URL}/v1/chat/completions",
+        _api_url("/chat/completions"),
         data=data,
         headers={"Content-Type": "application/json"},
     )
@@ -2063,7 +2076,7 @@ def handle_slash(cmd: str) -> bool:
 
     elif command in ("/status", "/stats"):
         try:
-            req = urllib.request.Request(f"{LLAMA_URL}/health")
+            req = urllib.request.Request(f"{_server_base_url()}/health")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 health = json.loads(resp.read().decode("utf-8"))
             status = health.get("status", "unknown")
@@ -2746,6 +2759,53 @@ def _watch_mode(pattern: str, prompt: str):
         print("\n  \033[36m[watch]\033[0m Stopped.")
 
 
+def _detect_backend() -> str:
+    """Probe the server to identify its backend.
+
+    LLAMA_URL is normalised to the bare server base URL; request paths such as
+    /v1/chat/completions are added by _api_url() when requests are built.
+    """
+    backend = "Unknown"
+    base_url = _server_base_url()
+
+    # 1. Try LM Studio (/v1/models)
+    try:
+        req = urllib.request.Request(f"{base_url}/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "data" in data:
+                backend = "LM Studio"
+                globals()["LLAMA_URL"] = base_url
+    except Exception:
+        pass
+
+    # 2. Try Ollama (/api/tags)
+    if backend == "Unknown":
+        try:
+            req = urllib.request.Request(f"{base_url}/api/tags")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if "models" in data:
+                    backend = "Ollama"
+                    globals()["LLAMA_URL"] = base_url
+        except Exception:
+            pass
+
+    # 3. Try llama.cpp (/health)
+    if backend == "Unknown":
+        try:
+            req = urllib.request.Request(f"{base_url}/health")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                health = json.loads(resp.read().decode("utf-8"))
+            if health.get("status") in ("ok", "error", "loading"):
+                backend = "llama.cpp"
+                globals()["LLAMA_URL"] = base_url
+        except Exception:
+            pass
+
+    return backend
+
+
 def main():
     global CWD
 
@@ -2817,47 +2877,7 @@ def main():
     _load_plugins()
 
     # Backend Detection
-    backend = "Unknown"
-    base_url = LLAMA_URL.rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-
-    # 1. Try LM Studio (/v1/models)
-    try:
-        req = urllib.request.Request(f"{base_url}/v1/models")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if "data" in data:
-                backend = "LM Studio"
-                globals()["LLAMA_URL"] = f"{base_url}/v1"
-    except Exception:
-        pass
-
-    # 2. Try Ollama (/api/tags)
-    if backend == "Unknown":
-        try:
-            req = urllib.request.Request(f"{base_url}/api/tags")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if "models" in data:
-                    backend = "Ollama"
-                    globals()["LLAMA_URL"] = f"{base_url}/v1"
-        except Exception:
-            pass
-
-    # 3. Try llama.cpp (/health)
-    if backend == "Unknown":
-        try:
-            req = urllib.request.Request(f"{base_url}/health")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                health = json.loads(resp.read().decode("utf-8"))
-            if health.get("status") in ("ok", "error", "loading"):
-                backend = "llama.cpp"
-                # llama.cpp also typically exposes /v1 for OpenAI compat
-                globals()["LLAMA_URL"] = base_url
-        except Exception:
-            pass
-
+    backend = _detect_backend()
     if backend == "Unknown":
         print(f"\033[33m[WARN]\033[0m Cannot definitively detect backend at {LLAMA_URL}. Assuming OpenAI-compatible.")
     else:
