@@ -107,3 +107,33 @@ def test_context_files_cannot_escape_project(tmp_path):
 
     assert "PROJECT NOTES" in loaded
     assert "SECRET KEY" not in loaded
+
+
+@pytest.mark.parametrize("name", [".trashclaw.md", "TRASHCLAW.md", "CLAUDE.md"])
+def test_instruction_file_symlink_cannot_escape_project(tmp_path, monkeypatch, name):
+    """A symlinked instructions file must not pull in files outside the project."""
+    project = tmp_path / "project"
+    project.mkdir()
+    secret = tmp_path / "id_rsa"
+    secret.write_text("SECRET KEY")
+    try:
+        os.symlink(str(secret), str(project / name))
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    monkeypatch.setattr(trashclaw, "CWD", str(project))
+
+    assert "SECRET KEY" not in trashclaw._load_project_instructions()
+    assert "SECRET KEY" not in trashclaw._load_context_files({}, cwd=str(project))
+
+
+def test_instruction_file_inside_project_still_loads(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "real.md").write_text("PROJECT RULES")
+    try:
+        os.symlink("real.md", str(project / "CLAUDE.md"))
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    monkeypatch.setattr(trashclaw, "CWD", str(project))
+
+    assert "PROJECT RULES" in trashclaw._load_project_instructions()

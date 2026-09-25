@@ -153,6 +153,78 @@ class TestRunCommandAlwaysApprove:
         assert len(prompts) == 1
         assert result == "Command cancelled by user."
 
+    # Evasion attempts against the metacharacter check. subprocess runs
+    # /bin/sh here; on Windows cmd.exe its chaining operators (& | < >) and
+    # newlines are in the same set.
+    @pytest.mark.parametrize("command", [
+        "   echo hi; touch PWNED",       # leading whitespace
+        "\techo hi && touch PWNED",     # leading tab
+        "echo\thi|touch PWNED",          # tab instead of space
+        "echo hi\r\ntouch PWNED",        # CRLF
+        "echo hi\rtouch PWNED",          # bare CR
+        "echo hi >PWNED",
+        "echo $(touch PWNED)",
+    ])
+    def test_evasions_prompt_and_do_not_run(self, prompts, tmp_path, command):
+        result = trashclaw.tool_run_command(command)
+        assert len(prompts) == 1
+        assert result == "Command cancelled by user."
+        assert not (tmp_path / "PWNED").exists()
+
+    # Characters that only look like separators, or expand without running
+    # anything, are not special to the shell: the approved command runs
+    # without a prompt and nothing else is executed.
+    @pytest.mark.parametrize("command", [
+        "echo hi\uff1b touch PWNED",     # fullwidth semicolon
+        "echo hi\u037e touch PWNED",     # Greek question mark (looks like ;)
+        "echo hi\uff06\uff06 touch PWNED",  # fullwidth ampersands
+        "echo hi\u2028touch PWNED",      # Unicode line separator
+        "echo hi\x0btouch PWNED",        # vertical tab
+        "echo * ~ touch PWNED",          # globbing and tilde expansion
+    ])
+    def test_lookalikes_and_globs_run_only_the_approved_command(
+            self, prompts, tmp_path, command):
+        (tmp_path / "existing.txt").write_text("")
+        trashclaw.tool_run_command(command)
+        assert prompts == []
+        assert not (tmp_path / "PWNED").exists()
+
+
+class TestAlwaysRefusedForGeneralPurposeTools:
+    """Approving an interpreter or exec-capable tool would approve anything."""
+
+    @pytest.mark.parametrize("prefix", [
+        "bash", "sh", "python3", "python3.11", "/usr/bin/env", "git", "find",
+        "sed", "tar", "xargs", "node", "perl", "FIND.EXE", "C:\\Tools\\env.exe",
+    ])
+    def test_refused(self, prefix):
+        assert trashclaw._allows_always(prefix) is False
+
+    @pytest.mark.parametrize("prefix", ["ls", "echo", "cat", "grep", "wc", "pytest"])
+    def test_allowed(self, prefix):
+        assert trashclaw._allows_always(prefix) is True
+
+    def test_always_answer_runs_once_without_persisting(self, monkeypatch, tmp_path):
+        answers = iter(["a", "n"])
+        monkeypatch.setattr(trashclaw, "APPROVE_SHELL", True)
+        monkeypatch.setattr(trashclaw, "APPROVED_COMMANDS", set())
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+        command = "sh -c 'echo ran_once'"
+
+        assert "ran_once" in trashclaw.tool_run_command(command)
+        assert trashclaw.APPROVED_COMMANDS == set()
+        assert trashclaw.tool_run_command(command) == "Command cancelled by user."
+
+    def test_always_answer_persists_for_plain_tools(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(trashclaw, "APPROVE_SHELL", True)
+        monkeypatch.setattr(trashclaw, "APPROVED_COMMANDS", set())
+        monkeypatch.setattr("builtins.input", lambda prompt="": "a")
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+
+        trashclaw.tool_run_command("echo hi")
+        assert trashclaw.APPROVED_COMMANDS == {"echo"}
+
 
 # ── tool_search_files ──
 

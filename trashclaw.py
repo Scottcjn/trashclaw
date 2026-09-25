@@ -178,6 +178,20 @@ def _apply_config(cfg: Dict):
         EXTRA_SYSTEM_PROMPT = "\n\n".join(prompts)
 
 
+def _inside_project(project_dir: str, path: str) -> bool:
+    """True if path, with symlinks resolved, is inside project_dir.
+
+    Project files are untrusted (a cloned repo can ship them), so anything
+    they make us read must stay in the project: absolute paths, ../ escapes
+    and symlinks could otherwise pull in ~/.ssh keys and the like.
+    """
+    root = os.path.realpath(project_dir)
+    try:
+        return os.path.commonpath([root, os.path.realpath(path)]) == root
+    except ValueError:  # different drives on Windows
+        return False
+
+
 def _load_context_files(cfg: Dict, cwd: str = None) -> str:
     """Load context files specified in .trashclaw.toml config.
 
@@ -196,14 +210,9 @@ def _load_context_files(cfg: Dict, cwd: str = None) -> str:
     # Load specified context files. They come from the (untrusted) project
     # config, so only files inside the project directory are allowed:
     # absolute paths and ../ escapes could pull in ~/.ssh keys and the like.
-    root = os.path.realpath(target_cwd)
     for rel_path in context_files:
-        abs_path = os.path.realpath(os.path.join(target_cwd, str(rel_path)))
-        try:
-            inside = os.path.commonpath([root, abs_path]) == root
-        except ValueError:  # different drives on Windows
-            inside = False
-        if not inside:
+        abs_path = os.path.join(target_cwd, str(rel_path))
+        if not _inside_project(target_cwd, abs_path):
             print(f"  [trashclaw] ignoring context file outside the project: {rel_path}",
                   file=sys.stderr)
             continue
@@ -217,7 +226,7 @@ def _load_context_files(cfg: Dict, cwd: str = None) -> str:
     
     # Auto-load .trashclaw.md from project root
     trashclaw_md = os.path.join(target_cwd, ".trashclaw.md")
-    if os.path.exists(trashclaw_md):
+    if os.path.exists(trashclaw_md) and _inside_project(target_cwd, trashclaw_md):
         try:
             with open(trashclaw_md, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read(16000)  # Cap at 16KB for markdown
@@ -758,7 +767,7 @@ def _load_project_instructions() -> str:
 
     for name in (".trashclaw.md", "TRASHCLAW.md", "CLAUDE.md"):
         path = os.path.join(CWD, name)
-        if os.path.exists(path):
+        if os.path.exists(path) and _inside_project(CWD, path):
             try:
                 with open(path, "r") as f:
                     content = f.read(4000)
@@ -945,6 +954,30 @@ def _has_shell_metachars(command: str) -> bool:
     return any(ch in _SHELL_METACHARS for ch in command)
 
 
+# Shells, interpreters and tools that can run arbitrary programs through their
+# own arguments (-c/-e, -exec, pagers, hooks, build scripts), so approving the
+# binary would approve anything. "always" is refused for these; each
+# invocation is confirmed.
+_NO_ALWAYS_COMMANDS = frozenset("""
+    sh bash zsh dash ksh mksh csh tcsh fish ash busybox pwsh powershell cmd
+    python py pypy perl ruby irb node nodejs deno bun php lua luajit tclsh wish
+    osascript awk gawk mawk nawk sed find xargs env sudo doas su runas exec
+    eval source command builtin nohup nice timeout time watch strace ltrace gdb
+    lldb script expect git tar zip make cmake ninja npm npx pnpm yarn pip pipx
+    uv uvx poetry cargo rustc go gcc cc clang docker podman kubectl ssh scp
+    rsync vi vim nvim ex emacs less more man crontab at systemd-run start
+""".split())
+
+
+def _allows_always(cmd_prefix: str) -> bool:
+    """Return False for binaries whose "always" approval would be unbounded."""
+    name = os.path.basename(cmd_prefix.replace("\\", "/")).lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    name = re.sub(r"[\d.]+$", "", name)  # python3.11 -> python, pip3 -> pip
+    return bool(name) and name not in _NO_ALWAYS_COMMANDS
+
+
 def tool_run_command(command: str, timeout: int = 30) -> str:
     """Execute a shell command with optional approval. Handles 'cd' specially."""
     global CWD
@@ -958,7 +991,9 @@ def tool_run_command(command: str, timeout: int = 30) -> str:
                 answer = input(f"  \033[33mRun:\033[0m {command} \033[90m[y/N/a(lways)]\033[0m ").strip().lower()
             except EOFError:
                 return "Error: User denied command (EOF)"
-            if answer in ("a", "always"):
+            if answer in ("a", "always") and not _allows_always(cmd_prefix):
+                print(f"  \033[90m[{cmd_prefix} can run arbitrary programs; approved this once only]\033[0m")
+            elif answer in ("a", "always"):
                 APPROVED_COMMANDS.add(cmd_prefix)
                 print(f"  \033[90m[approved: {cmd_prefix} commands for this session]\033[0m")
             elif answer not in ("y", "yes"):
