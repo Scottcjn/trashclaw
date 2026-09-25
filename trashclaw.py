@@ -45,6 +45,38 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".trashclaw")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history")
 
+# A project-local .trashclaw.toml/.json comes from whatever directory the user
+# runs in (e.g. a freshly cloned repo), so it is untrusted. It must not be able
+# to turn off shell approval or redirect the LLM traffic to another server;
+# those settings are honoured only from ~/.trashclaw/config.json, env vars or
+# CLI flags.
+PROJECT_CONFIG_BLOCKED_KEYS = ("url", "auto_shell")
+
+
+def _merge_project_config(cfg: Dict, project_cfg: Dict, source: str = "project config"):
+    """Merge an untrusted project config into cfg, dropping unsafe settings.
+
+    - ``url`` and ``auto_shell`` are ignored (with a warning).
+    - ``read_only`` may only switch read-only mode on, never off.
+    - ``system_prompt`` never replaces the user's own; it is kept separately as
+      ``project_system_prompt`` and appended after it.
+    """
+    for key, value in project_cfg.items():
+        if key in PROJECT_CONFIG_BLOCKED_KEYS:
+            print(f"\033[33m[WARN]\033[0m Ignoring '{key}' from {source}: "
+                  f"set it in {CONFIG_FILE}, an env var or a CLI flag instead.",
+                  file=sys.stderr)
+            continue
+        if key == "read_only":
+            if str(value).lower() in ("1", "true", "yes", "on"):
+                cfg[key] = value
+            continue
+        if key == "system_prompt":
+            cfg["project_system_prompt"] = value
+            continue
+        cfg[key] = value
+
+
 def _load_config(cwd: str = None) -> Dict:
     """Load config from ~/.trashclaw/config.json and .trashclaw.toml (cwd). Env wins."""
     cfg = {}
@@ -70,10 +102,11 @@ def _load_config(cwd: str = None) -> Dict:
             import tomllib
             with open(toml_path, "rb") as f:
                 project_cfg = tomllib.load(f)
-            cfg.update(project_cfg)
+            _merge_project_config(cfg, project_cfg, toml_path)
         except ImportError:
             # Fallback: minimal TOML parser for Python < 3.11
             try:
+                project_cfg = {}
                 with open(toml_path, "r") as f:
                     for line in f:
                         line = line.strip()
@@ -95,7 +128,8 @@ def _load_config(cwd: str = None) -> Dict:
                                     v = False
                                 elif v.isdigit():
                                     v = int(v)
-                            cfg[k] = v
+                            project_cfg[k] = v
+                _merge_project_config(cfg, project_cfg, toml_path)
             except Exception:
                 pass
         except Exception:
@@ -106,7 +140,7 @@ def _load_config(cwd: str = None) -> Dict:
             with open(json_path, "r") as f:
                 project_cfg = json.load(f)
             if isinstance(project_cfg, dict):
-                cfg.update(project_cfg)
+                _merge_project_config(cfg, project_cfg, json_path)
         except Exception:
             pass
 
@@ -132,9 +166,16 @@ def _apply_config(cfg: Dict):
     APPROVE_SHELL = _c("auto_shell", "TRASHCLAW_AUTO_SHELL", "0") != "1"
     READ_ONLY_MODE = str(_c("read_only", "TRASHCLAW_READONLY", "0")).lower() in ("1", "true", "yes", "on")
 
-    # Project-level system prompt override from .trashclaw.toml
-    if "system_prompt" in cfg and cfg["system_prompt"]:
-        EXTRA_SYSTEM_PROMPT = str(cfg["system_prompt"])
+    # User system prompt (home config) plus any project prompt, which is
+    # appended after it rather than replacing it.
+    prompts = []
+    if cfg.get("system_prompt"):
+        prompts.append(str(cfg["system_prompt"]))
+    if cfg.get("project_system_prompt"):
+        prompts.append("Project instructions (from project .trashclaw config):\n"
+                       + str(cfg["project_system_prompt"]))
+    if prompts:
+        EXTRA_SYSTEM_PROMPT = "\n\n".join(prompts)
 
 
 def _load_context_files(cfg: Dict, cwd: str = None) -> str:
