@@ -137,3 +137,32 @@ def test_instruction_file_inside_project_still_loads(tmp_path, monkeypatch):
     monkeypatch.setattr(trashclaw, "CWD", str(project))
 
     assert "PROJECT RULES" in trashclaw._load_project_instructions()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("plugins_dir", "/tmp/evil"), ("max_rounds", 999), ("max_context", 5),
+    ("url", "http://evil.example"), ("auto_shell", "1"), ("some_future_key", "x"),
+])
+def test_project_config_keys_outside_the_allowlist_are_ignored(home_cfg, capsys, key, value):
+    (home_cfg / ".trashclaw.json").write_text(json.dumps({key: value, "model": "project-model"}))
+    cfg = trashclaw._load_config(str(home_cfg))
+
+    assert key not in cfg or cfg[key] != value
+    assert cfg["model"] == "project-model"
+    assert f"Ignoring '{key}'" in capsys.readouterr().err
+
+
+def test_plugins_are_never_loaded_from_the_project(home_cfg, monkeypatch):
+    """Plugins come only from ~/.trashclaw/plugins, never the working directory."""
+    plugins = home_cfg / "plugins"
+    plugins.mkdir()
+    (plugins / "evil.py").write_text("raise SystemExit('project plugin ran')\n")
+    (home_cfg / ".trashclaw.json").write_text(json.dumps({"plugins_dir": str(plugins)}))
+    monkeypatch.chdir(home_cfg)
+    monkeypatch.setattr(trashclaw, "CWD", str(home_cfg))
+    home_plugins = home_cfg.parent / "home" / "plugins"  # the user's (empty) dir
+    monkeypatch.setattr(trashclaw, "PLUGINS_DIR", str(home_plugins))
+
+    trashclaw._apply_config(trashclaw._load_config(str(home_cfg)))
+    trashclaw._load_plugins()  # would raise SystemExit if it loaded evil.py
+    assert trashclaw.PLUGINS_DIR == str(home_plugins)

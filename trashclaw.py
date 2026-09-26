@@ -18,6 +18,7 @@ import subprocess
 import urllib.request
 import urllib.error
 import re
+import shlex
 import glob as globlib
 import difflib
 import traceback
@@ -46,23 +47,24 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history")
 
 # A project-local .trashclaw.toml/.json comes from whatever directory the user
-# runs in (e.g. a freshly cloned repo), so it is untrusted. It must not be able
-# to turn off shell approval or redirect the LLM traffic to another server;
-# those settings are honoured only from ~/.trashclaw/config.json, env vars or
-# CLI flags.
-PROJECT_CONFIG_BLOCKED_KEYS = ("url", "auto_shell")
+# runs in (e.g. a freshly cloned repo), so it is untrusted. Only these keys are
+# taken from it; everything else (url, auto_shell, max_rounds, any key added
+# later, ...) is honoured only from ~/.trashclaw/config.json, env vars or CLI
+# flags.
+PROJECT_CONFIG_ALLOWED_KEYS = ("model", "context_files", "system_prompt", "read_only")
 
 
 def _merge_project_config(cfg: Dict, project_cfg: Dict, source: str = "project config"):
-    """Merge an untrusted project config into cfg, dropping unsafe settings.
+    """Merge an untrusted project config into cfg, keeping only allowed keys.
 
-    - ``url`` and ``auto_shell`` are ignored (with a warning).
+    - Keys outside ``PROJECT_CONFIG_ALLOWED_KEYS`` are ignored (with a warning).
     - ``read_only`` may only switch read-only mode on, never off.
     - ``system_prompt`` never replaces the user's own; it is kept separately as
       ``project_system_prompt`` and appended after it.
+    - ``context_files`` are confined to the project by ``_load_context_files``.
     """
     for key, value in project_cfg.items():
-        if key in PROJECT_CONFIG_BLOCKED_KEYS:
+        if key not in PROJECT_CONFIG_ALLOWED_KEYS:
             print(f"\033[33m[WARN]\033[0m Ignoring '{key}' from {source}: "
                   f"set it in {CONFIG_FILE}, an env var or a CLI flag instead.",
                   file=sys.stderr)
@@ -954,45 +956,57 @@ def _has_shell_metachars(command: str) -> bool:
     return any(ch in _SHELL_METACHARS for ch in command)
 
 
-# Shells, interpreters and tools that can run arbitrary programs through their
-# own arguments (-c/-e, -exec, pagers, hooks, build scripts), so approving the
-# binary would approve anything. "always" is refused for these; each
-# invocation is confirmed.
-_NO_ALWAYS_COMMANDS = frozenset("""
-    sh bash zsh dash ksh mksh csh tcsh fish ash busybox pwsh powershell cmd
-    python py pypy perl ruby irb node nodejs deno bun php lua luajit tclsh wish
-    osascript awk gawk mawk nawk sed find xargs env sudo doas su runas exec
-    eval source command builtin nohup nice timeout time watch strace ltrace gdb
-    lldb script expect git tar zip make cmake ninja npm npx pnpm yarn pip pipx
-    uv uvx poetry cargo rustc go gcc cc clang docker podman kubectl ssh scp
-    rsync vi vim nvim ex emacs less more man crontab at systemd-run start
+# "always" can only be granted to these read-only tools, which cannot run
+# other programs through their arguments. Anything else (shells, interpreters,
+# build tools, test runners that import project code, scripts the model can
+# rewrite, ...) is confirmed every time.
+_ALWAYS_ALLOWED_COMMANDS = frozenset("""
+    ls cat grep wc head tail echo pwd date whoami uname which file stat du df
 """.split())
+_COMMAND_NAME_RE = re.compile(r"[A-Za-z0-9._+-]+")
+
+
+def _command_key(command: str) -> str:
+    """The program name that an "always" approval is keyed on, or "".
+
+    Uses shell-style word splitting (Python's str.split() also splits on
+    characters such as \\x0b that /bin/sh treats as part of a word) and only
+    accepts plain printable-ASCII names, so the key is exactly the program
+    the shell will run.
+    """
+    if any(not (" " <= ch <= "~") for ch in command):
+        return ""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ""
+    if not words or not _COMMAND_NAME_RE.fullmatch(words[0]):
+        return ""
+    return words[0]
 
 
 def _allows_always(cmd_prefix: str) -> bool:
-    """Return False for binaries whose "always" approval would be unbounded."""
-    name = os.path.basename(cmd_prefix.replace("\\", "/")).lower()
-    if name.endswith(".exe"):
-        name = name[:-4]
-    name = re.sub(r"[\d.]+$", "", name)  # python3.11 -> python, pip3 -> pip
-    return bool(name) and name not in _NO_ALWAYS_COMMANDS
+    """Return True only for read-only tools that may be approved for the session."""
+    return cmd_prefix in _ALWAYS_ALLOWED_COMMANDS
 
 
 def tool_run_command(command: str, timeout: int = 30) -> str:
     """Execute a shell command with optional approval. Handles 'cd' specially."""
     global CWD
     if APPROVE_SHELL:
-        # Check if command prefix is pre-approved
-        cmd_prefix = command.strip().split()[0] if command.strip() else ""
-        # "always" approval covers a single simple command only: anything that
-        # could chain or substitute further commands must be confirmed.
-        if cmd_prefix not in APPROVED_COMMANDS or _has_shell_metachars(command):
+        # Check if command prefix is pre-approved. "always" approval covers a
+        # single simple command only: anything that could chain or substitute
+        # further commands, or that isn't plain printable ASCII, is confirmed.
+        cmd_prefix = _command_key(command)
+        if (cmd_prefix not in APPROVED_COMMANDS or not _allows_always(cmd_prefix)
+                or _has_shell_metachars(command)):
             try:
                 answer = input(f"  \033[33mRun:\033[0m {command} \033[90m[y/N/a(lways)]\033[0m ").strip().lower()
             except EOFError:
                 return "Error: User denied command (EOF)"
             if answer in ("a", "always") and not _allows_always(cmd_prefix):
-                print(f"  \033[90m[{cmd_prefix} can run arbitrary programs; approved this once only]\033[0m")
+                name = cmd_prefix or command.strip()[:40]
+                print(f"  \033[90m[\"always\" is only offered for read-only tools; approved {name} this once]\033[0m")
             elif answer in ("a", "always"):
                 APPROVED_COMMANDS.add(cmd_prefix)
                 print(f"  \033[90m[approved: {cmd_prefix} commands for this session]\033[0m")

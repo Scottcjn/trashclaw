@@ -129,7 +129,7 @@ See `plugins/example_weather.py` for a complete example.
 - **Config file**: `~/.trashclaw/config.json` — no more env vars
 - **Project instructions**: `.trashclaw.md` in project root customizes agent behavior
 - **Auto-compact**: Context auto-trims when too long
-- **Smart shell approval**: Answer 'a' to always-approve a command type
+- **Smart shell approval**: Answer 'a' to always-approve a read-only tool (`ls`, `cat`, `grep`, `wc`, `head`, `tail`, `echo`, `pwd`, ...); everything else is confirmed each time
 - **Colored diffs**: Green additions, red deletions on edits
 - **Ctrl+C**: Interrupts generation, not the app
 - **Retry logic**: Auto-retries on LLM connection failure
@@ -216,7 +216,7 @@ But TrashClaw runs on *anything*. We've tested on PowerPC G4s, IBM POWER8 mainfr
 ## Limitations
 
 - 3B models make mistakes on complex multi-step tasks. Bigger models help.
-- Shell approval adds friction. `TRASHCLAW_AUTO_SHELL=1` or answer 'a' (always) to remove it.
+- Shell approval adds friction. `TRASHCLAW_AUTO_SHELL=1` removes it; answering 'a' (always) removes it for read-only tools only.
 - On discrete GPUs, token generation can be slower via Metal than CPU due to PCIe copies.
 
 ## License
