@@ -84,6 +84,37 @@ Displays:
     
     @patch('sys.platform', 'darwin')
     @patch('subprocess.run')
+    def test_gpu_names_keep_original_case(self, mock_run):
+        """Names come from 'Chipset Model:' in original case (regression)."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="""
+Graphics/Displays:
+    Intel Iris Pro:
+      Chipset Model: Intel Iris Pro
+      Vendor: Intel
+    AMD FirePro D500:
+      Chipset Model: AMD FirePro D500
+      Vendor: AMD (0x1002)
+"""
+        )
+
+        result = trashclaw._detect_gpu_info()
+
+        assert result["gpu_type"] == "discrete"
+        assert result["gpu_name"] == "AMD FirePro D500"
+
+        mock_run.return_value.stdout = """
+Graphics/Displays:
+    Intel Iris Pro:
+      Chipset Model: Intel Iris Pro
+"""
+        result = trashclaw._detect_gpu_info()
+        assert result["gpu_type"] == "integrated"
+        assert result["gpu_name"] == "Intel Iris Pro"
+
+    @patch('sys.platform', 'darwin')
+    @patch('subprocess.run')
     def test_detect_error_handling(self, mock_run):
         """Test error handling when system_profiler fails."""
         mock_run.side_effect = Exception("Command not found")

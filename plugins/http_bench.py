@@ -42,6 +42,10 @@ TOOL_DEF = {
             "timeout": {
                 "type": "number",
                 "description": "Request timeout in seconds (default: 10)"
+            },
+            "insecure": {
+                "type": "boolean",
+                "description": "Skip TLS certificate verification (default: false). Only for self-signed test servers."
             }
         },
         "required": ["url"]
@@ -62,13 +66,17 @@ def _percentile(sorted_data: list, pct: float) -> float:
     return sorted_data[f] + d * (sorted_data[c] - sorted_data[f])
 
 
-def _make_request(url: str, method: str, req_timeout: float) -> dict:
-    """Make a single HTTP request and return timing info."""
+def _make_request(url: str, method: str, req_timeout: float, insecure: bool = False) -> dict:
+    """Make a single HTTP request and return timing info.
+
+    TLS certificates are verified unless insecure is True.
+    """
     result = {"status": 0, "latency_ms": 0.0, "error": None, "size": 0}
     try:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        if insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
 
         req = urllib.request.Request(url, method=method.upper())
         req.add_header("User-Agent", "TrashClaw-HTTPBench/1.0")
@@ -93,7 +101,8 @@ def _make_request(url: str, method: str, req_timeout: float) -> dict:
 
 
 def run(url: str = "", requests: int = 20, concurrency: int = 4,
-        method: str = "GET", timeout: float = 10.0, **kwargs) -> str:
+        method: str = "GET", timeout: float = 10.0, insecure: bool = False,
+        **kwargs) -> str:
     if not url:
         return "Error: 'url' is required."
 
@@ -107,16 +116,22 @@ def run(url: str = "", requests: int = 20, concurrency: int = 4,
     if method not in ("GET", "POST", "HEAD", "PUT", "DELETE", "PATCH"):
         method = "GET"
 
+    if isinstance(insecure, str):
+        insecure = insecure.strip().lower() in ("1", "true", "yes", "on")
+    insecure = bool(insecure)
+
     lines = [f"HTTP Benchmark: {method} {url}",
-             f"Requests: {requests} | Concurrency: {concurrency} | Timeout: {timeout}s",
-             "-" * 50, ""]
+             f"Requests: {requests} | Concurrency: {concurrency} | Timeout: {timeout}s"]
+    if insecure and url.startswith("https://"):
+        lines.append("WARNING: TLS certificate verification disabled (insecure=true)")
+    lines += ["-" * 50, ""]
 
     results = []
     wall_start = time.monotonic()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = [
-            executor.submit(_make_request, url, method, timeout)
+            executor.submit(_make_request, url, method, timeout, insecure)
             for _ in range(requests)
         ]
         for f in concurrent.futures.as_completed(futures):

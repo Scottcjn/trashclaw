@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test runner (pytest only; trashclaw itself is stdlib-only)
+        run: python -m pip install pytest
+      - name: Check Python 3.7 grammar compatibility
+        run: |
+          python - <<'PY'
+          import ast, glob
+          for path in ["trashclaw.py"] + sorted(glob.glob("plugins/*.py")):
+              with open(path, encoding="utf-8") as f:
+                  ast.parse(f.read(), filename=path, feature_version=(3, 7))
+              print("ok (3.7 grammar):", path)
+          PY
+      - name: Run tests
+        run: python -m pytest -q

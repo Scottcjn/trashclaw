@@ -18,6 +18,7 @@ import subprocess
 import urllib.request
 import urllib.error
 import re
+import shlex
 import glob as globlib
 import difflib
 import traceback
@@ -45,6 +46,39 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".trashclaw")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history")
 
+# A project-local .trashclaw.toml/.json comes from whatever directory the user
+# runs in (e.g. a freshly cloned repo), so it is untrusted. Only these keys are
+# taken from it; everything else (url, auto_shell, max_rounds, any key added
+# later, ...) is honoured only from ~/.trashclaw/config.json, env vars or CLI
+# flags.
+PROJECT_CONFIG_ALLOWED_KEYS = ("model", "context_files", "system_prompt", "read_only")
+
+
+def _merge_project_config(cfg: Dict, project_cfg: Dict, source: str = "project config"):
+    """Merge an untrusted project config into cfg, keeping only allowed keys.
+
+    - Keys outside ``PROJECT_CONFIG_ALLOWED_KEYS`` are ignored (with a warning).
+    - ``read_only`` may only switch read-only mode on, never off.
+    - ``system_prompt`` never replaces the user's own; it is kept separately as
+      ``project_system_prompt`` and appended after it.
+    - ``context_files`` are confined to the project by ``_load_context_files``.
+    """
+    for key, value in project_cfg.items():
+        if key not in PROJECT_CONFIG_ALLOWED_KEYS:
+            print(f"\033[33m[WARN]\033[0m Ignoring '{key}' from {source}: "
+                  f"set it in {CONFIG_FILE}, an env var or a CLI flag instead.",
+                  file=sys.stderr)
+            continue
+        if key == "read_only":
+            if str(value).lower() in ("1", "true", "yes", "on"):
+                cfg[key] = value
+            continue
+        if key == "system_prompt":
+            cfg["project_system_prompt"] = value
+            continue
+        cfg[key] = value
+
+
 def _load_config(cwd: str = None) -> Dict:
     """Load config from ~/.trashclaw/config.json and .trashclaw.toml (cwd). Env wins."""
     cfg = {}
@@ -70,10 +104,11 @@ def _load_config(cwd: str = None) -> Dict:
             import tomllib
             with open(toml_path, "rb") as f:
                 project_cfg = tomllib.load(f)
-            cfg.update(project_cfg)
+            _merge_project_config(cfg, project_cfg, toml_path)
         except ImportError:
             # Fallback: minimal TOML parser for Python < 3.11
             try:
+                project_cfg = {}
                 with open(toml_path, "r") as f:
                     for line in f:
                         line = line.strip()
@@ -95,7 +130,8 @@ def _load_config(cwd: str = None) -> Dict:
                                     v = False
                                 elif v.isdigit():
                                     v = int(v)
-                            cfg[k] = v
+                            project_cfg[k] = v
+                _merge_project_config(cfg, project_cfg, toml_path)
             except Exception:
                 pass
         except Exception:
@@ -106,7 +142,7 @@ def _load_config(cwd: str = None) -> Dict:
             with open(json_path, "r") as f:
                 project_cfg = json.load(f)
             if isinstance(project_cfg, dict):
-                cfg.update(project_cfg)
+                _merge_project_config(cfg, project_cfg, json_path)
         except Exception:
             pass
 
@@ -132,9 +168,30 @@ def _apply_config(cfg: Dict):
     APPROVE_SHELL = _c("auto_shell", "TRASHCLAW_AUTO_SHELL", "0") != "1"
     READ_ONLY_MODE = str(_c("read_only", "TRASHCLAW_READONLY", "0")).lower() in ("1", "true", "yes", "on")
 
-    # Project-level system prompt override from .trashclaw.toml
-    if "system_prompt" in cfg and cfg["system_prompt"]:
-        EXTRA_SYSTEM_PROMPT = str(cfg["system_prompt"])
+    # User system prompt (home config) plus any project prompt, which is
+    # appended after it rather than replacing it.
+    prompts = []
+    if cfg.get("system_prompt"):
+        prompts.append(str(cfg["system_prompt"]))
+    if cfg.get("project_system_prompt"):
+        prompts.append("Project instructions (from project .trashclaw config):\n"
+                       + str(cfg["project_system_prompt"]))
+    if prompts:
+        EXTRA_SYSTEM_PROMPT = "\n\n".join(prompts)
+
+
+def _inside_project(project_dir: str, path: str) -> bool:
+    """True if path, with symlinks resolved, is inside project_dir.
+
+    Project files are untrusted (a cloned repo can ship them), so anything
+    they make us read must stay in the project: absolute paths, ../ escapes
+    and symlinks could otherwise pull in ~/.ssh keys and the like.
+    """
+    root = os.path.realpath(project_dir)
+    try:
+        return os.path.commonpath([root, os.path.realpath(path)]) == root
+    except ValueError:  # different drives on Windows
+        return False
 
 
 def _load_context_files(cfg: Dict, cwd: str = None) -> str:
@@ -152,9 +209,15 @@ def _load_context_files(cfg: Dict, cwd: str = None) -> str:
     target_cwd = cwd or os.getcwd()
     parts = []
     
-    # Load specified context files
+    # Load specified context files. They come from the (untrusted) project
+    # config, so only files inside the project directory are allowed:
+    # absolute paths and ../ escapes could pull in ~/.ssh keys and the like.
     for rel_path in context_files:
         abs_path = os.path.join(target_cwd, str(rel_path))
+        if not _inside_project(target_cwd, abs_path):
+            print(f"  [trashclaw] ignoring context file outside the project: {rel_path}",
+                  file=sys.stderr)
+            continue
         if os.path.exists(abs_path) and os.path.isfile(abs_path):
             try:
                 with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
@@ -165,7 +228,7 @@ def _load_context_files(cfg: Dict, cwd: str = None) -> str:
     
     # Auto-load .trashclaw.md from project root
     trashclaw_md = os.path.join(target_cwd, ".trashclaw.md")
-    if os.path.exists(trashclaw_md):
+    if os.path.exists(trashclaw_md) and _inside_project(target_cwd, trashclaw_md):
         try:
             with open(trashclaw_md, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read(16000)  # Cap at 16KB for markdown
@@ -706,7 +769,7 @@ def _load_project_instructions() -> str:
 
     for name in (".trashclaw.md", "TRASHCLAW.md", "CLAUDE.md"):
         path = os.path.join(CWD, name)
-        if os.path.exists(path):
+        if os.path.exists(path) and _inside_project(CWD, path):
             try:
                 with open(path, "r") as f:
                     content = f.read(4000)
@@ -882,18 +945,69 @@ def tool_edit_file(path: str, old_string: str, new_string: str) -> str:
     return f"Edited {path} (1 replacement)\n{diff_str}"
 
 
+# Characters that let a shell run more than the first command (chaining,
+# pipes, substitution, redirection, subshells). Commands containing any of
+# these are never auto-approved by an "always" answer.
+_SHELL_METACHARS = set(";&|$`<>()\n\r")
+
+
+def _has_shell_metachars(command: str) -> bool:
+    """Return True if command contains shell control/substitution characters."""
+    return any(ch in _SHELL_METACHARS for ch in command)
+
+
+# "always" can only be granted to these read-only tools, which cannot run
+# other programs through their arguments. Anything else (shells, interpreters,
+# build tools, test runners that import project code, scripts the model can
+# rewrite, ...) is confirmed every time.
+_ALWAYS_ALLOWED_COMMANDS = frozenset("""
+    ls cat grep wc head tail echo pwd date whoami uname which file stat du df
+""".split())
+_COMMAND_NAME_RE = re.compile(r"[A-Za-z0-9._+-]+")
+
+
+def _command_key(command: str) -> str:
+    """The program name that an "always" approval is keyed on, or "".
+
+    Uses shell-style word splitting (Python's str.split() also splits on
+    characters such as \\x0b that /bin/sh treats as part of a word) and only
+    accepts plain printable-ASCII names, so the key is exactly the program
+    the shell will run.
+    """
+    if any(not (" " <= ch <= "~") for ch in command):
+        return ""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ""
+    if not words or not _COMMAND_NAME_RE.fullmatch(words[0]):
+        return ""
+    return words[0]
+
+
+def _allows_always(cmd_prefix: str) -> bool:
+    """Return True only for read-only tools that may be approved for the session."""
+    return cmd_prefix in _ALWAYS_ALLOWED_COMMANDS
+
+
 def tool_run_command(command: str, timeout: int = 30) -> str:
     """Execute a shell command with optional approval. Handles 'cd' specially."""
     global CWD
     if APPROVE_SHELL:
-        # Check if command prefix is pre-approved
-        cmd_prefix = command.strip().split()[0] if command.strip() else ""
-        if cmd_prefix not in APPROVED_COMMANDS:
+        # Check if command prefix is pre-approved. "always" approval covers a
+        # single simple command only: anything that could chain or substitute
+        # further commands, or that isn't plain printable ASCII, is confirmed.
+        cmd_prefix = _command_key(command)
+        if (cmd_prefix not in APPROVED_COMMANDS or not _allows_always(cmd_prefix)
+                or _has_shell_metachars(command)):
             try:
                 answer = input(f"  \033[33mRun:\033[0m {command} \033[90m[y/N/a(lways)]\033[0m ").strip().lower()
             except EOFError:
                 return "Error: User denied command (EOF)"
-            if answer in ("a", "always"):
+            if answer in ("a", "always") and not _allows_always(cmd_prefix):
+                name = cmd_prefix or command.strip()[:40]
+                print(f"  \033[90m[\"always\" is only offered for read-only tools; approved {name} this once]\033[0m")
+            elif answer in ("a", "always"):
                 APPROVED_COMMANDS.add(cmd_prefix)
                 print(f"  \033[90m[approved: {cmd_prefix} commands for this session]\033[0m")
             elif answer not in ("y", "yes"):
@@ -1329,7 +1443,7 @@ def _check_vision_support() -> bool:
 
     # Try /v1/models endpoint for multimodal info
     try:
-        req = urllib.request.Request(f"{LLAMA_URL}/v1/models")
+        req = urllib.request.Request(_api_url("/models"))
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             for m in data.get("data", []):
@@ -1491,28 +1605,44 @@ def _detect_gpu_info() -> Dict:
         if result.returncode != 0:
             return {"gpu_type": "unknown", "gpu_name": "Unknown", "metal_supported": False}
         
-        output = result.stdout.lower()
-        
+        output = result.stdout
+
         # Detect discrete GPUs (AMD FirePro, AMD Radeon Pro, NVIDIA)
         discrete_keywords = ["firepro", "radeon pro", "amd radeon", "nvidia"]
         # Detect integrated GPUs (Intel Iris, Intel HD)
         integrated_keywords = ["intel iris", "intel hd", "intel uhd"]
-        
+
+        def _classify(name: str) -> str:
+            lowered = name.lower()
+            if any(kw in lowered for kw in discrete_keywords):
+                return "discrete"
+            if any(kw in lowered for kw in integrated_keywords):
+                return "integrated"
+            return "unknown"
+
+        # Prefer the "Chipset Model: <name>" lines; fall back to any line
+        # (e.g. the "AMD FirePro D500:" section header). Names keep their
+        # original case, and only the text after the first ":" of a
+        # "key: value" line is used.
+        candidates = []
+        for line in output.split('\n'):
+            stripped = line.strip()
+            if stripped.lower().startswith("chipset model:"):
+                candidates.append(stripped.split(":", 1)[1].strip())
+        if not candidates:
+            candidates = [line.strip().rstrip(":").strip() for line in output.split('\n')]
+
         gpu_name = "Unknown"
         gpu_type = "unknown"
-        
-        for line in output.split('\n'):
-            if any(kw in line for kw in discrete_keywords):
-                gpu_type = "discrete"
-                # Extract GPU name
-                if ":" in line:
-                    gpu_name = line.split(":")[1].strip()
+
+        for name in candidates:
+            kind = _classify(name)
+            if kind == "discrete":
+                gpu_type, gpu_name = kind, name
                 break
-            elif any(kw in line for kw in integrated_keywords):
-                gpu_type = "integrated"
-                if ":" in line:
-                    gpu_name = line.split(":")[1].strip()
-        
+            if kind == "integrated" and gpu_type == "unknown":
+                gpu_type, gpu_name = kind, name
+
         # Metal is supported on macOS 10.15+ with Metal-capable GPU
         # All discrete GPUs from 2013+ support Metal
         metal_supported = gpu_type != "unknown"
@@ -1652,6 +1782,19 @@ BOUDREAUX COMPUTING PRINCIPLES:
 {project_instructions}"""
 
 
+def _server_base_url() -> str:
+    """Return LLAMA_URL as a bare server base URL (no trailing slash or /v1)."""
+    base = LLAMA_URL.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base
+
+
+def _api_url(path: str) -> str:
+    """Build an OpenAI-compatible endpoint URL, e.g. _api_url("/chat/completions")."""
+    return f"{_server_base_url()}/v1{path}"
+
+
 def llm_request_with_retry(messages: List[Dict], tools: List[Dict] = None) -> Dict:
     """Call llm_request with retry on connection failure."""
     for attempt in range(LLM_RETRY_ATTEMPTS + 1):
@@ -1683,7 +1826,7 @@ def llm_request(messages: List[Dict], tools: List[Dict] = None) -> Dict:
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"{LLAMA_URL}/v1/chat/completions",
+        _api_url("/chat/completions"),
         data=data,
         headers={"Content-Type": "application/json"},
     )
@@ -2063,7 +2206,7 @@ def handle_slash(cmd: str) -> bool:
 
     elif command in ("/status", "/stats"):
         try:
-            req = urllib.request.Request(f"{LLAMA_URL}/health")
+            req = urllib.request.Request(f"{_server_base_url()}/health")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 health = json.loads(resp.read().decode("utf-8"))
             status = health.get("status", "unknown")
@@ -2098,11 +2241,6 @@ def handle_slash(cmd: str) -> bool:
         if gpu_info["gpu_type"] != "unknown":
             metal_status = "✓" if gpu_info["metal_supported"] else "✗"
             print(f"  GPU: {gpu_info['gpu_name']} ({gpu_info['gpu_type']}) | Metal: {metal_status}")
-            print(f"  Session stats: {s['total_tokens']} tokens | {s['turns']} turns | {s['total_seconds']:.1f}s total")
-            print(f"  Average speed: {avg_tps:.1f} tok/s")
-        if LAST_GENERATION_STATS:
-            g = LAST_GENERATION_STATS
-            print(f"  Last generation: {g['tokens_per_sec']:.1f} tok/s | {g['tokens']} tokens | {g['seconds']:.1f}s")
 
     elif command == "/compact":
         # Keep only last 10 messages
@@ -2746,6 +2884,53 @@ def _watch_mode(pattern: str, prompt: str):
         print("\n  \033[36m[watch]\033[0m Stopped.")
 
 
+def _detect_backend() -> str:
+    """Probe the server to identify its backend.
+
+    LLAMA_URL is normalised to the bare server base URL; request paths such as
+    /v1/chat/completions are added by _api_url() when requests are built.
+    """
+    backend = "Unknown"
+    base_url = _server_base_url()
+
+    # 1. Try LM Studio (/v1/models)
+    try:
+        req = urllib.request.Request(f"{base_url}/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "data" in data:
+                backend = "LM Studio"
+                globals()["LLAMA_URL"] = base_url
+    except Exception:
+        pass
+
+    # 2. Try Ollama (/api/tags)
+    if backend == "Unknown":
+        try:
+            req = urllib.request.Request(f"{base_url}/api/tags")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if "models" in data:
+                    backend = "Ollama"
+                    globals()["LLAMA_URL"] = base_url
+        except Exception:
+            pass
+
+    # 3. Try llama.cpp (/health)
+    if backend == "Unknown":
+        try:
+            req = urllib.request.Request(f"{base_url}/health")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                health = json.loads(resp.read().decode("utf-8"))
+            if health.get("status") in ("ok", "error", "loading"):
+                backend = "llama.cpp"
+                globals()["LLAMA_URL"] = base_url
+        except Exception:
+            pass
+
+    return backend
+
+
 def main():
     global CWD
 
@@ -2817,47 +3002,7 @@ def main():
     _load_plugins()
 
     # Backend Detection
-    backend = "Unknown"
-    base_url = LLAMA_URL.rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-
-    # 1. Try LM Studio (/v1/models)
-    try:
-        req = urllib.request.Request(f"{base_url}/v1/models")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if "data" in data:
-                backend = "LM Studio"
-                globals()["LLAMA_URL"] = f"{base_url}/v1"
-    except Exception:
-        pass
-
-    # 2. Try Ollama (/api/tags)
-    if backend == "Unknown":
-        try:
-            req = urllib.request.Request(f"{base_url}/api/tags")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if "models" in data:
-                    backend = "Ollama"
-                    globals()["LLAMA_URL"] = f"{base_url}/v1"
-        except Exception:
-            pass
-
-    # 3. Try llama.cpp (/health)
-    if backend == "Unknown":
-        try:
-            req = urllib.request.Request(f"{base_url}/health")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                health = json.loads(resp.read().decode("utf-8"))
-            if health.get("status") in ("ok", "error", "loading"):
-                backend = "llama.cpp"
-                # llama.cpp also typically exposes /v1 for OpenAI compat
-                globals()["LLAMA_URL"] = base_url
-        except Exception:
-            pass
-
+    backend = _detect_backend()
     if backend == "Unknown":
         print(f"\033[33m[WARN]\033[0m Cannot definitively detect backend at {LLAMA_URL}. Assuming OpenAI-compatible.")
     else:

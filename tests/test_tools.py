@@ -112,6 +112,180 @@ class TestRunCommand:
         assert isinstance(result, str)
 
 
+class TestRunCommandAlwaysApprove:
+    """An "always" approval must not cover chained/substituted commands."""
+
+    @pytest.fixture
+    def prompts(self, monkeypatch, tmp_path):
+        asked = []
+
+        def fake_input(prompt=""):
+            asked.append(prompt)
+            return "n"
+
+        monkeypatch.setattr(trashclaw, "APPROVE_SHELL", True)
+        monkeypatch.setattr(trashclaw, "APPROVED_COMMANDS", {"echo"})
+        monkeypatch.setattr("builtins.input", fake_input)
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+        return asked
+
+    def test_simple_approved_command_runs_without_prompt(self, prompts):
+        result = trashclaw.tool_run_command("echo approved_ok")
+        assert "approved_ok" in result
+        assert prompts == []
+
+    @pytest.mark.parametrize("command", [
+        "echo hi && echo pwned",
+        "echo hi; echo pwned",
+        "echo hi || echo pwned",
+        "echo hi | cat",
+        "echo hi & echo pwned",
+        "echo $(echo pwned)",
+        "echo `echo pwned`",
+        "echo ${HOME}",
+        "echo hi > out.txt",
+        "echo hi < in.txt",
+        "echo hi\necho pwned",
+        "echo (hi)",
+    ])
+    def test_metachar_command_still_prompts(self, prompts, command):
+        result = trashclaw.tool_run_command(command)
+        assert len(prompts) == 1
+        assert result == "Command cancelled by user."
+
+    # Evasion attempts against the metacharacter check. subprocess runs
+    # /bin/sh here; on Windows cmd.exe its chaining operators (& | < >) and
+    # newlines are in the same set.
+    @pytest.mark.parametrize("command", [
+        "   echo hi; touch PWNED",       # leading whitespace
+        "\techo hi && touch PWNED",     # leading tab
+        "echo\thi|touch PWNED",          # tab instead of space
+        "echo hi\r\ntouch PWNED",        # CRLF
+        "echo hi\rtouch PWNED",          # bare CR
+        "echo hi >PWNED",
+        "echo $(touch PWNED)",
+    ])
+    def test_evasions_prompt_and_do_not_run(self, prompts, tmp_path, command):
+        result = trashclaw.tool_run_command(command)
+        assert len(prompts) == 1
+        assert result == "Command cancelled by user."
+        assert not (tmp_path / "PWNED").exists()
+
+    # Globbing and tilde expansion don't run anything: the approved command
+    # runs without a prompt and nothing else is executed.
+    def test_globs_run_only_the_approved_command(self, prompts, tmp_path):
+        (tmp_path / "existing.txt").write_text("")
+        trashclaw.tool_run_command("echo * ~ touch PWNED")
+        assert prompts == []
+        assert not (tmp_path / "PWNED").exists()
+
+    # Anything outside printable ASCII always prompts: Python's str.split()
+    # breaks words on characters (\x0b, \x1c-\x1f, \x85, U+2028, ...) that
+    # /bin/sh keeps inside a word, so the approval key and the program the
+    # shell runs could differ.
+    @pytest.mark.parametrize("command", [
+        "echo hi\uff1b touch PWNED",     # fullwidth semicolon
+        "echo hi\u037e touch PWNED",     # Greek question mark (looks like ;)
+        "echo hi\uff06\uff06 touch PWNED",  # fullwidth ampersands
+        "echo hi\u2028touch PWNED",      # Unicode line separator
+        "echo hi\x0btouch PWNED",        # vertical tab
+        "echo\x0b/p", "echo\x0c/p", "echo\x1c/p", "echo\x1f/p", "echo\x85/p",
+    ])
+    def test_non_ascii_or_control_characters_prompt(self, prompts, tmp_path, command):
+        assert trashclaw.tool_run_command(command) == "Command cancelled by user."
+        assert len(prompts) == 1
+        assert not (tmp_path / "PWNED").exists()
+
+    @pytest.mark.skipif(os.name != "posix", reason="needs a POSIX shell")
+    @pytest.mark.parametrize("sep", ["\x0b", "\x0c", "\x1c", "\x1f"])
+    def test_word_split_mismatch_cannot_run_a_planted_script(self, prompts, tmp_path, sep):
+        """Reviewer's reproduction: 'echo<VT>/p' is keyed as 'echo' by str.split()
+        but /bin/sh runs the planted script './echo<VT>/p'."""
+        planted = tmp_path / ("echo" + sep)
+        planted.mkdir()
+        script = planted / "p"
+        script.write_text("#!/bin/sh\ntouch PWNED\n")
+        script.chmod(0o755)
+
+        assert trashclaw.tool_run_command("echo" + sep + "/p") == "Command cancelled by user."
+        assert len(prompts) == 1
+        assert not (tmp_path / "PWNED").exists()
+
+
+class TestAlwaysOnlyForReadOnlyTools:
+    """"always" is an allowlist of read-only tools; everything else prompts."""
+
+    @pytest.mark.parametrize("prefix", [
+        "bash", "sh", "python3", "/usr/bin/env", "env", "git", "find", "sed", "tar",
+        "xargs", "node", "perl", "sqlite3", "psql", "hg", "sftp", "flock", "setsid",
+        "stdbuf", "ionice", "valgrind", "tmux", "screen", "pre-commit", "tox", "nox",
+        "rake", "mvn", "gradle", "just", "gem", "bundle", "Rscript", "jshell",
+        "toybox", "pytest", "./script.sh", "make", "", "ECHO",
+    ])
+    def test_refused(self, prefix):
+        assert trashclaw._allows_always(prefix) is False
+
+    @pytest.mark.parametrize("prefix", ["ls", "echo", "cat", "grep", "wc", "head", "tail", "pwd"])
+    def test_allowed(self, prefix):
+        assert trashclaw._allows_always(prefix) is True
+
+    @pytest.mark.parametrize("command", [
+        "sqlite3 :memory: '.shell touch PWNED'",
+        "psql -c '\\! touch PWNED'",
+        "hg --config 'alias.x=!touch PWNED' x",
+        "sftp -o 'ProxyCommand=touch PWNED' host",
+        "flock /tmp/lock touch PWNED",
+        "setsid touch PWNED",
+        "stdbuf -o0 touch PWNED",
+        "tmux new -d 'touch PWNED'",
+        "Rscript -e 'file.create(\"PWNED\")'",
+        "pytest",
+    ])
+    def test_escalating_commands_prompt_even_if_previously_approved(
+            self, monkeypatch, tmp_path, command):
+        asked = []
+        monkeypatch.setattr(trashclaw, "APPROVE_SHELL", True)
+        # Even if one of these somehow ended up approved, it must still prompt.
+        monkeypatch.setattr(trashclaw, "APPROVED_COMMANDS", {
+            "echo", "sqlite3", "psql", "hg", "sftp", "flock", "setsid", "stdbuf",
+            "tmux", "Rscript", "pytest",
+        })
+        monkeypatch.setattr("builtins.input", lambda prompt="": asked.append(prompt) or "n")
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+
+        assert trashclaw.tool_run_command(command) == "Command cancelled by user."
+        assert len(asked) == 1
+        assert not (tmp_path / "PWNED").exists()
+
+    def test_always_answer_runs_once_without_persisting(self, monkeypatch, tmp_path):
+        answers = iter(["a", "n"])
+        monkeypatch.setattr(trashclaw, "APPROVE_SHELL", True)
+        monkeypatch.setattr(trashclaw, "APPROVED_COMMANDS", set())
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+        command = "sh -c 'echo ran_once'"
+
+        assert "ran_once" in trashclaw.tool_run_command(command)
+        assert trashclaw.APPROVED_COMMANDS == set()
+        assert trashclaw.tool_run_command(command) == "Command cancelled by user."
+
+    def test_always_answer_persists_for_read_only_tools(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(trashclaw, "APPROVE_SHELL", True)
+        monkeypatch.setattr(trashclaw, "APPROVED_COMMANDS", set())
+        monkeypatch.setattr("builtins.input", lambda prompt="": "a")
+        monkeypatch.setattr(trashclaw, "CWD", str(tmp_path))
+
+        trashclaw.tool_run_command("echo hi")
+        assert trashclaw.APPROVED_COMMANDS == {"echo"}
+
+    @pytest.mark.parametrize("command,key", [
+        ("echo hi", "echo"), ("  ls -la", "ls"), ("'ls' x", "ls"),
+        ("echo\x0b/p", ""), ("./echo x", ""), ("/bin/ls", ""), ("echo 'unbalanced", ""),
+    ])
+    def test_command_key(self, command, key):
+        assert trashclaw._command_key(command) == key
+
+
 # ── tool_search_files ──
 
 class TestSearchFiles:

@@ -59,8 +59,8 @@ class TestWordCount:
     def test_count_file(self, sample_text_file):
         """Test counting words in a file."""
         result = trashclaw.tool_word_count(path=str(sample_text_file))
-        assert "Words: 9" in result
-        assert "Characters: 47" in result
+        assert "Words: 10" in result  # Hello World (2) + This is a test file (5) + With three lines (3)
+        assert "Characters: 49" in result  # 12 + 20 + 17, including newlines
         assert "Lines: 3" in result
     
     def test_count_empty_file(self, empty_file):

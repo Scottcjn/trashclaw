@@ -97,3 +97,39 @@ def test_clamp_requests(local_http_server):
     result = run(url=f"http://127.0.0.1:{local_http_server}", requests=9999, concurrency=1)
     # Should report 500 max
     assert "500" in result
+
+
+# ── TLS verification ──
+
+def _captured_contexts(monkeypatch, **run_kwargs):
+    import ssl
+    import urllib.error
+    import http_bench
+
+    contexts = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        contexts.append(context)
+        raise urllib.error.URLError("stubbed")
+
+    monkeypatch.setattr(http_bench.urllib.request, "urlopen", fake_urlopen)
+    output = run(url="https://example.invalid", requests=2, concurrency=1, **run_kwargs)
+    assert len(contexts) == 2
+    return ssl, contexts, output
+
+
+def test_tls_verified_by_default(monkeypatch):
+    ssl, contexts, output = _captured_contexts(monkeypatch)
+    for ctx in contexts:
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+        assert ctx.check_hostname is True
+    assert "verification disabled" not in output
+
+
+@pytest.mark.parametrize("flag", [True, "true"])
+def test_tls_insecure_opt_in(monkeypatch, flag):
+    ssl, contexts, output = _captured_contexts(monkeypatch, insecure=flag)
+    for ctx in contexts:
+        assert ctx.verify_mode == ssl.CERT_NONE
+        assert ctx.check_hostname is False
+    assert "verification disabled" in output
